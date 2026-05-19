@@ -30,6 +30,19 @@ namespace ars408
 class Ars408Driver
 {
 private:
+  //  SensorID and dynamically computed CAN IDs 
+  uint8_t sensor_id_{0};  // Radar SensorID (0 to 7), default 0
+
+  // CAN IDs computed at startup using: MsgId = MsgId_BASE + sensor_id_ * 0x10
+  uint32_t radar_state_id_;
+  uint32_t obj_status_id_;
+  uint32_t obj_general_id_;
+  uint32_t obj_quality_id_;
+  uint32_t obj_extended_id_;
+  uint32_t obj_warning_id_;
+  uint32_t radar_cfg_id_;
+
+  
   bool valid_radar_state_;
   bool sequential_publish_;
   ars408::RadarState current_radar_state_;
@@ -118,6 +131,14 @@ private:
 
 public:
   /**
+   * Initializes the driver with the radar SensorID.
+   * Computes all CAN IDs dynamically using:
+   * MsgId = MsgId_BASE + sensor_id * 0x10
+   * @param sensor_id Radar SensorID (0 to 7)
+   */
+  void Init(uint8_t sensor_id);
+
+  /**
    * Parses incoming can_id and its byte array can_data
    * @param can_id CAN message Id
    * @param in_can_data Eight byte Array containing message content
@@ -148,7 +169,6 @@ public:
    * @param objects_callback pointer to callback function
    * @param sequential_publish parameter of publish mode
    */
-
   void RegisterDetectedObjectsCallback(
     std::function<void(const std::unordered_map<uint8_t, ars408::RadarObject> &)> objects_callback,
     bool sequential_publish);

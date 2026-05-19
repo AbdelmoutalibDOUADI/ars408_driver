@@ -145,6 +145,15 @@ void PeContinentalArs408Node::GenerateUUIDTable()
 
 void PeContinentalArs408Node::Run()
 {
+int sensor_id = this->declare_parameter<int>("sensor_id", 0);
+if (sensor_id < 0 || sensor_id > 7) {
+  RCLCPP_ERROR(
+    rclcpp::get_logger("PeContinentalArs408Node"),
+    "Invalid sensor_id parameter: %d. Valid values are between 0 and 7. Defaulting to 0.",
+    sensor_id);
+  sensor_id = 0;
+}
+  ars408_driver_.Init(static_cast<uint8_t>(sensor_id));
   output_frame_ = this->declare_parameter<std::string>("output_frame", "ars408");
   publish_radar_track_ = this->declare_parameter<bool>("publish_radar_track", true);
   publish_radar_scan_ = this->declare_parameter<bool>("publish_radar_scan", false);

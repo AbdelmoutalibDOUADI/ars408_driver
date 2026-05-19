@@ -1,0 +1,9 @@
+/**:
+  ros__parameters:
+    sensor_id: 0
+    output_frame: "radar_front"
+    publish_radar_track: true
+    publish_radar_scan: false
+    sequential_publish: false
+    size_x: 1.8
+    size_y: 1.8
