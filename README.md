@@ -48,10 +48,10 @@ Each driver instance reads its `sensor_id` from a YAML configuration file, compu
 
 ## Prerequisites
 
-- ROS2 Jazzy (Ubuntu 24.04)
-- `ros-jazzy-can-msgs`
-- `ros-jazzy-radar-msgs`
-- `ros-jazzy-ros2-socketcan`
+- ROS2 Humble (Ubuntu 22.04)
+- `ros-humble-can-msgs`
+- `ros-humble-radar-msgs`
+- `ros-humble-ros2-socketcan`
 - A CAN interface (e.g. `can0`) connected to the radar(s)
 
 Install dependencies:
@@ -67,7 +67,7 @@ rosdep install --from-paths src --ignore-src -r -y
 
 ```bash
 cd ~/ros2_ws_ars408
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 ```
@@ -192,7 +192,7 @@ Listens: 0x60A, 0x60B...         Listens: 0x61A, 0x61B...
 
 - Continental ARS408-21 Technical Documentation V1.8 (October 2017)
 - [TIER IV original driver](https://github.com/tier4/ars408_driver)
-- ROS2 Jazzy documentation
+- ROS2 Humble documentation
 
 ---
 
