@@ -1,3 +1,4 @@
+
 # ARS408 ROS2 Dual Radar Driver
 
 ROS2 driver for the Continental ARS408-21 radar sensor, extended to support **two radar units operating simultaneously on the same CAN bus**.
@@ -116,6 +117,91 @@ Each radar is configured via a YAML file in the `config/` directory.
 | `publish_radar_scan` | bool | Publish `RadarScan` on `~/output/scan` |
 | `sequential_publish` | bool | If true, publish each object as soon as received |
 | `size_x` / `size_y` | double | Default object size in meters (used when radar does not provide dimensions) |
+
+---
+
+## Configuring SensorID via RadarCfg (CAN ID `0x200`)
+
+Before connecting both radars on the same CAN bus, each unit must be assigned a unique SensorID. This is done by sending a `RadarCfg` message to the radar **while it is the only device on the bus**, to avoid any ID collision.
+
+### Step 1 — Connect only one radar at a time
+
+Do not connect both radars simultaneously during this procedure. Configure each unit individually, then connect them together once both SensorIDs are set.
+
+### Step 2 — Bring up the CAN interface
+
+```bash
+sudo ip link set can0 up type can bitrate 500000
+```
+
+### Step 3 — Send the RadarCfg frame
+
+To assign **SensorID = 1** to the rear radar and persist it across power cycles:
+
+```bash
+cansend can0 200#8200000001800000
+```
+
+> For the front radar (SensorID = 0): no change needed if the radar ships with SensorID = 0 by default. You can confirm by observing CAN traffic on IDs `0x60A–0x60D`.
+
+### Frame breakdown
+
+The `RadarCfg` message is 8 bytes (64 bits), encoded in **Little Endian** as defined in the Continental ARS408-21 documentation (Table 2, p. 12).
+
+```
+Payload:  82 00 00 00 01 80 00 00
+Byte:      0   1   2   3   4   5   6   7
+```
+
+| Signal | Bit(s) | Value | Meaning |
+|--------|--------|-------|---------|
+| `RadarCfg_SensorID_valid` | bit 1 | `1` | Authorize SensorID change |
+| `RadarCfg_StoreInNVM_valid` | bit 7 | `1` | Authorize NVM write |
+| `RadarCfg_SensorID` | bits 32–34 | `1` | New SensorID = 1 |
+| `RadarCfg_StoreInNVM` | bit 47 | `1` | Persist across power cycles |
+
+**Byte-level explanation:**
+
+```
+Byte 0 = 0x82 = 1000 0010b  →  bit 7 (StoreInNVM_valid) + bit 1 (SensorID_valid)
+Byte 4 = 0x01 = 0000 0001b  →  bit 32 set → SensorID = 1
+Byte 5 = 0x80 = 1000 0000b  →  bit 47 set → StoreInNVM = 1
+Bytes 1,2,3,6,7 = 0x00      →  unused / not valid
+```
+
+### Step 4 — Verify with candump
+
+Before sending the frame, `candump can0` shows:
+
+```
+can0  60A  [8]  ...   # Obj_Status  (SensorID=0)
+can0  60B  [8]  ...   # Obj_General (SensorID=0)
+can0  60D  [8]  ...   # Obj_Extended (SensorID=0)
+```
+
+After sending, the IDs shift to:
+
+```
+can0  61A  [8]  ...   # Obj_Status  (SensorID=1) ✓
+can0  61B  [8]  ...   # Obj_General (SensorID=1) ✓
+can0  61D  [8]  ...   # Obj_Extended (SensorID=1) ✓
+```
+
+This confirms the formula: `MsgId = MsgId_BASE + SensorId × 0x10`
+
+> **Important:** After this change, any future `RadarCfg` messages for this radar must be sent to **`0x210`** (not `0x200`), since the radar now only listens on its shifted CAN ID. The `0x200` ID will no longer be acknowledged by this unit.
+
+### Step 5 — Repeat for the other radar
+
+Disconnect the first radar, connect the second unit, and repeat Step 3 with the appropriate SensorID value.
+
+### Step 6 — Connect both radars and launch
+
+Once both radars are configured with different SensorIDs, connect them together on the CAN bus and run:
+
+```bash
+ros2 launch pe_ars408_ros dual_radar.launch.xml
+```
 
 ---
 
