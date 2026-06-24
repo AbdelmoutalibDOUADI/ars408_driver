@@ -505,7 +505,7 @@ ars408::Obj_3_Extended Ars408Driver::ParseObject3_Extended(const std::array<uint
     case 0: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::POINT;       break;
     case 1: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::CAR;         break;
     case 2: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::TRUCK;       break;
-    case 3: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::RESERVED_01; break;
+    case 3: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::PEDESTRIAN;  break;
     case 4: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::MOTORCYCLE;  break;
     case 5: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::BICYCLE;     break;
     case 6: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::WIDE;        break;

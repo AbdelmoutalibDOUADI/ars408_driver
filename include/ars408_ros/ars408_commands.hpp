@@ -616,14 +616,14 @@ public:
   /* Relative acceleration in lateral direction */
   float RelativeLateralAccelerationY;
   enum ObjectClassProperty {
-    POINT,
-    CAR,
-    TRUCK,
-    RESERVED_01,
-    MOTORCYCLE,
-    BICYCLE,
-    WIDE,
-    RESERVED_02
+    POINT       = 0,  ///< 0x0 - Point target
+    CAR         = 1,  ///< 0x1 - Car
+    TRUCK       = 2,  ///< 0x2 - Truck
+    PEDESTRIAN  = 3,  ///< 0x3 - Pedestrian (datasheet Table 45)
+    MOTORCYCLE  = 4,  ///< 0x4 - Motorcycle
+    BICYCLE     = 5,  ///< 0x5 - Bicycle
+    WIDE        = 6,  ///< 0x6 - Wide object (barrier, wall)
+    RESERVED    = 7   ///< 0x7 - Reserved
   };
   ObjectClassProperty ObjectClass; /*Class of the object*/
   float OrientationAngle;          /*-180  180 0.4 degOrientation angle of the object in degrees */

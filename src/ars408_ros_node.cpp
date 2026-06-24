@@ -36,11 +36,12 @@ uint32_t PeContinentalArs408Node::ConvertRadarClassToAwSemanticClass(
   const ars408::Obj_3_Extended::ObjectClassProperty & cls)
 {
   switch (cls) {
-    case ars408::Obj_3_Extended::CAR:        return 32001;
-    case ars408::Obj_3_Extended::TRUCK:      return 32002;
-    case ars408::Obj_3_Extended::MOTORCYCLE: return 32005;
-    case ars408::Obj_3_Extended::BICYCLE:    return 32006;
-    default:                                 return 32000;  // UNKNOWN
+    case ars408::Obj_3_Extended::CAR:         return 32001;
+    case ars408::Obj_3_Extended::TRUCK:       return 32002;
+    case ars408::Obj_3_Extended::PEDESTRIAN:  return 32003;  // Autoware: pedestrian
+    case ars408::Obj_3_Extended::MOTORCYCLE:  return 32005;
+    case ars408::Obj_3_Extended::BICYCLE:     return 32006;
+    default:                                  return 32000;  // UNKNOWN
   }
 }
 

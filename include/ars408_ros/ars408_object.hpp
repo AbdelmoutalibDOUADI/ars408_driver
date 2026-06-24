@@ -91,7 +91,7 @@ public:
       case ars408::Obj_3_Extended::ObjectClassProperty::BICYCLE:     return "BICYCLE";
       case ars408::Obj_3_Extended::ObjectClassProperty::WIDE:        return "WIDE";
       case ars408::Obj_3_Extended::ObjectClassProperty::POINT:       return "POINT";
-      default:                                                         return "RESERVED";
+      default:                                                         return "PEDESTRIAN";
     }
   }
 
