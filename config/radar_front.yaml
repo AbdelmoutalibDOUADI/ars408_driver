@@ -1,9 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  pe_ars408_ros — Configuration Radar FRONT  (SensorID = 0)
+#  Continental ARS408-21 @ 77 GHz
+#  MiviaCar platform — MIVIA Lab, UNISA
+#
+#  CAN IDs actifs (SensorID=0, offset=0x00) :
+#    0x200 RadarCfg   0x201 RadarState
+#    0x60A Obj_0_Status  0x60B Obj_1_General
+#    0x60C Obj_2_Quality 0x60D Obj_3_Extended
+#
+#  Doc Continental ARS408-21 Electrical Interface Description rev 1.5
+# ─────────────────────────────────────────────────────────────────────────────
+
 /**:
   ros__parameters:
+
+    # ── SensorID ─────────────────────────────────────────────────────────────
+    # ID du capteur sur le bus CAN [0..7]
+    # Formule Continental : MsgId = MsgId_BASE + sensor_id × 0x10
+    # SensorID=0 → IDs de base (0x60A, 0x60B, ...)
+    # SensorID=1 → IDs décalés (0x61A, 0x61B, ...)
     sensor_id: 0
-    output_frame: "radar_front"
+
+    # ── Frame TF de sortie ───────────────────────────────────────────────────
+    # Nom du frame ROS2 publié dans le header des RadarTracks / RadarScan.
+    # Doit correspondre à un frame déclaré dans le TF tree (URDF / robot_state_publisher).
+    output_frame: "radar_front_link"
+
+    # ── Topics de sortie ─────────────────────────────────────────────────────
+    # publish_radar_track : publie radar_msgs/RadarTracks (tracks Autoware-compatibles)
+    # publish_radar_scan  : publie radar_msgs/RadarScan   (retours bruts polaires)
     publish_radar_track: true
     publish_radar_scan: false
+
+    # ── Mode de publication ──────────────────────────────────────────────────
+    # false (défaut) : publie quand Obj_0_Status du cycle SUIVANT arrive
+    #                  → latence 1 cycle (~75ms) mais batch complet garanti
+    # true           : publie dès que NofObjects reçus, sans attendre Quality/Extended
+    #                  → latence minimale, mais Quality/Extended peuvent manquer
     sequential_publish: false
-    size_x: 1.8
-    size_y: 1.8
+
+    # ── Taille par défaut des objets ─────────────────────────────────────────
+    # Utilisée pour RadarTrack.size quand Obj_3_Extended n'est pas disponible
+    # (SendExtInfo=0) ou que length/width = 0.
+    # Valeurs typiques Continental ARS408 : voiture ~4.5×1.8m, piéton ~0.5×0.5m
+    # Unité : mètres
+    size_x: 4.5    # dimension longitudinale (profondeur)
+    size_y: 1.8    # dimension latérale (largeur)

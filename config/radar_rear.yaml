@@ -1,9 +1,34 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  pe_ars408_ros — Configuration Radar REAR  (SensorID = 1)
+#  Continental ARS408-21 @ 77 GHz
+#  MiviaCar platform — MIVIA Lab, UNISA
+#
+#  CAN IDs actifs (SensorID=1, offset=0x10) :
+#    0x210 RadarCfg   0x211 RadarState
+#    0x61A Obj_0_Status  0x61B Obj_1_General
+#    0x61C Obj_2_Quality 0x61D Obj_3_Extended
+#
+#  Reconfiguration SensorID effectuée via :
+#    cansend can0 200#8200000001800000
+#  (change SensorID=0 → SensorID=1, stocké en NVM)
+# ─────────────────────────────────────────────────────────────────────────────
+
 /**:
   ros__parameters:
+
+    # ── SensorID ─────────────────────────────────────────────────────────────
     sensor_id: 1
-    output_frame: "radar_rear"
+
+    # ── Frame TF de sortie ───────────────────────────────────────────────────
+    output_frame: "radar_rear_link"
+
+    # ── Topics de sortie ─────────────────────────────────────────────────────
     publish_radar_track: true
     publish_radar_scan: false
+
+    # ── Mode de publication ──────────────────────────────────────────────────
     sequential_publish: false
-    size_x: 1.8
+
+    # ── Taille par défaut des objets ─────────────────────────────────────────
+    size_x: 4.5
     size_y: 1.8
