@@ -1,0 +1,32 @@
+<launch>
+  <!-- PointCloud2 output pour un radar front -->
+  <arg name="interface" default="can0" />
+
+  <!-- Driver radar front -->
+  <include file="$(find-pkg-share pe_ars408_ros)/launch/dual_radar.launch.xml">
+    <arg name="interface" value="$(var interface)" />
+  </include>
+
+  <!-- Conversion RadarTracks → PointCloud2 FRONT -->
+  <node pkg="pe_ars408_ros" exec="radar_pointcloud_node"
+        name="radar_pointcloud_front"
+        namespace="radar_front"
+        output="screen">
+    <param name="output_frame" value="radar_front_link" />
+    <param name="min_rcs"      value="-30.0" />
+    <remap from="~/input/tracks"     to="/radar_front/pe_ars408_node_front/output/objects" />
+    <remap from="~/output/pointcloud" to="/sensing/radar/front/pointcloud" />
+  </node>
+
+  <!-- Conversion RadarTracks → PointCloud2 REAR -->
+  <node pkg="pe_ars408_ros" exec="radar_pointcloud_node"
+        name="radar_pointcloud_rear"
+        namespace="radar_rear"
+        output="screen">
+    <param name="output_frame" value="radar_rear_link" />
+    <param name="min_rcs"      value="-30.0" />
+    <remap from="~/input/tracks"     to="/radar_rear/pe_ars408_node_rear/output/objects" />
+    <remap from="~/output/pointcloud" to="/sensing/radar/rear/pointcloud" />
+  </node>
+
+</launch>

@@ -33,6 +33,16 @@ rclcpp_components_register_node(pe_ars408_node_component
   EXECUTABLE pe_ars408_node
 )
 
+# PointCloud2 converter node
+ament_auto_add_library(radar_pointcloud_node_component SHARED
+  src/radar_pointcloud_node.cpp
+)
+
+rclcpp_components_register_node(radar_pointcloud_node_component
+  PLUGIN "RadarToPointCloudNode"
+  EXECUTABLE radar_pointcloud_node
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
