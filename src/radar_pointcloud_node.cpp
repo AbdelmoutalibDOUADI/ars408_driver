@@ -1,12 +1,9 @@
 // Copyright 2025 Abdelmoutalib DOUADI - MIVIA Lab, UNISA
-//
-// Licensed under the Apache License, Version 2.0
-//
-// RadarToPointCloudNode
-// Converts RadarTracks → PointCloud2 for RViz2 and Autoware pipeline
+// RadarToPointCloudNode — RadarTracks → PointCloud2
 
 #include "ars408_ros/radar_pointcloud_node.hpp"
 #include <rclcpp_components/register_node_macro.hpp>
+#include <cmath>
 
 RadarToPointCloudNode::RadarToPointCloudNode(const rclcpp::NodeOptions & options)
 : Node("radar_pointcloud_node", options)
@@ -24,44 +21,29 @@ RadarToPointCloudNode::RadarToPointCloudNode(const rclcpp::NodeOptions & options
 
   RCLCPP_INFO(
     this->get_logger(),
-    "RadarToPointCloud started — frame='%s'  min_rcs=%.1f dBm²  min_prob=%.2f",
-    output_frame_.c_str(), min_rcs_, min_prob_);
+    "RadarToPointCloud started — frame='%s'  min_rcs=%.1f dBm²",
+    output_frame_.c_str(), min_rcs_);
 }
 
 void RadarToPointCloudNode::TracksCallback(
   const radar_msgs::msg::RadarTracks::SharedPtr msg)
 {
-  if (msg->tracks.empty()) {
-    return;
-  }
+  if (msg->tracks.empty()) return;
 
-  // ── Count valid points after filter ──────────────────────────────────────
-  size_t n_valid = 0;
-  for (const auto & track : msg->tracks) {
-    // RCS is stored in track.position.z... No. We use amplitude convention:
-    // RadarTrack has no RCS field directly — we stored it in velocity.z = 0
-    // and rcs is in track.velocity_covariance[8] as a workaround
-    // For simplicity here we publish all objects (filter by size check)
-    if (track.size.x > 0.0f || track.size.y > 0.0f) {
-      n_valid++;
-    }
-  }
+  const size_t n = msg->tracks.size();
 
-  if (n_valid == 0) return;
-
-  // ── Build PointCloud2 ─────────────────────────────────────────────────────
-  // Fields: x, y, z, velocity_x, velocity_y, rcs_approx, obj_id
+  // Build PointCloud2
   sensor_msgs::msg::PointCloud2 cloud;
   cloud.header.stamp    = msg->header.stamp;
   cloud.header.frame_id = output_frame_.empty() ? msg->header.frame_id : output_frame_;
-  cloud.height = 1;
-  cloud.width  = static_cast<uint32_t>(n_valid);
+  cloud.height   = 1;
+  cloud.width    = static_cast<uint32_t>(n);
   cloud.is_dense = true;
   cloud.is_bigendian = false;
 
-  // Define fields
-  sensor_msgs::PointCloud2Modifier modifier(cloud);
-  modifier.setPointCloud2Fields(
+  // Fields: x y z velocity_x velocity_y range azimuth
+  sensor_msgs::PointCloud2Modifier mod(cloud);
+  mod.setPointCloud2Fields(
     7,
     "x",          1, sensor_msgs::msg::PointField::FLOAT32,
     "y",          1, sensor_msgs::msg::PointField::FLOAT32,
@@ -71,46 +53,38 @@ void RadarToPointCloudNode::TracksCallback(
     "range",      1, sensor_msgs::msg::PointField::FLOAT32,
     "azimuth",    1, sensor_msgs::msg::PointField::FLOAT32
   );
-  modifier.resize(n_valid);
+  mod.resize(n);
 
-  // Fill iterators
-  sensor_msgs::PointCloud2Iterator<float> iter_x(cloud, "x");
-  sensor_msgs::PointCloud2Iterator<float> iter_y(cloud, "y");
-  sensor_msgs::PointCloud2Iterator<float> iter_z(cloud, "z");
-  sensor_msgs::PointCloud2Iterator<float> iter_vx(cloud, "velocity_x");
-  sensor_msgs::PointCloud2Iterator<float> iter_vy(cloud, "velocity_y");
-  sensor_msgs::PointCloud2Iterator<float> iter_r(cloud, "range");
-  sensor_msgs::PointCloud2Iterator<float> iter_az(cloud, "azimuth");
+  sensor_msgs::PointCloud2Iterator<float> ix(cloud, "x");
+  sensor_msgs::PointCloud2Iterator<float> iy(cloud, "y");
+  sensor_msgs::PointCloud2Iterator<float> iz(cloud, "z");
+  sensor_msgs::PointCloud2Iterator<float> ivx(cloud, "velocity_x");
+  sensor_msgs::PointCloud2Iterator<float> ivy(cloud, "velocity_y");
+  sensor_msgs::PointCloud2Iterator<float> ir(cloud, "range");
+  sensor_msgs::PointCloud2Iterator<float> iaz(cloud, "azimuth");
 
-  for (const auto & track : msg->tracks) {
-    if (!(track.size.x > 0.0f || track.size.y > 0.0f)) continue;
+  for (const auto & t : msg->tracks) {
+    const float x  = static_cast<float>(t.position.x);
+    const float y  = static_cast<float>(t.position.y);
+    const float vx = static_cast<float>(t.velocity.x);
+    const float vy = static_cast<float>(t.velocity.y);
 
-    const float x  = static_cast<float>(track.position.x);
-    const float y  = static_cast<float>(track.position.y);
-    const float vx = static_cast<float>(track.velocity.x);
-    const float vy = static_cast<float>(track.velocity.y);
-    const float r  = std::hypot(x, y);
-    const float az = std::atan2(y, x);
+    *ix  = x;
+    *iy  = y;
+    *iz  = 0.0f;
+    *ivx = vx;
+    *ivy = vy;
+    *ir  = std::hypot(x, y);
+    *iaz = std::atan2(y, x);
 
-    *iter_x  = x;
-    *iter_y  = y;
-    *iter_z  = 0.0f;
-    *iter_vx = vx;
-    *iter_vy = vy;
-    *iter_r  = r;
-    *iter_az = az;
-
-    ++iter_x; ++iter_y; ++iter_z;
-    ++iter_vx; ++iter_vy;
-    ++iter_r; ++iter_az;
+    ++ix; ++iy; ++iz; ++ivx; ++ivy; ++ir; ++iaz;
   }
 
   pub_cloud_->publish(cloud);
 
-  RCLCPP_DEBUG(
+  RCLCPP_INFO(
     this->get_logger(),
-    "Published PointCloud2: %zu points  frame='%s'",
-    n_valid, cloud.header.frame_id.c_str());
+    "PointCloud2 published: %zu points", n);
 }
 
 RCLCPP_COMPONENTS_REGISTER_NODE(RadarToPointCloudNode)
