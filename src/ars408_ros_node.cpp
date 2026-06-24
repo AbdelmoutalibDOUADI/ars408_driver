@@ -109,7 +109,7 @@ PeContinentalArs408Node::ConvertRadarObjectToRadarReturn(const ars408::RadarObje
 void PeContinentalArs408Node::RadarDetectedObjectsCallback(
   const std::unordered_map<uint8_t, ars408::RadarObject> & detected_objects)
 {
-  auto stamp = can_data_ ? can_data_->header.stamp : this->now();
+  rclcpp::Time stamp = can_data_ ? rclcpp::Time(can_data_->header.stamp) : this->now();
 
   radar_msgs::msg::RadarTracks tracks_msg;
   tracks_msg.header.frame_id = output_frame_;
