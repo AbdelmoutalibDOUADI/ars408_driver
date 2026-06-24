@@ -509,7 +509,7 @@ ars408::Obj_3_Extended Ars408Driver::ParseObject3_Extended(const std::array<uint
     case 4: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::MOTORCYCLE;  break;
     case 5: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::BICYCLE;     break;
     case 6: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::WIDE;        break;
-    default:ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::RESERVED_02; break;
+    default:ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::RESERVED; break;
   }
 
   // Obj_OrientationAngle: 10-bit at bit39 (Motorola)
