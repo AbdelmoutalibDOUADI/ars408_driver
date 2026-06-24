@@ -1,6 +1,6 @@
 <launch>
   <!-- PointCloud2 output pour un radar front -->
-  <arg name="interface" default="can0" />
+  <arg name="interface" default="can1" />
 
   <!-- Driver radar front -->
   <include file="$(find-pkg-share pe_ars408_ros)/launch/dual_radar.launch.xml">
