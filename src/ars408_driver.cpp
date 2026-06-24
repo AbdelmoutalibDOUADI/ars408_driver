@@ -381,40 +381,22 @@ ars408::RadarObject Ars408Driver::ParseObject1_General(const std::array<uint8_t,
 // ─────────────────────────────────────────────────────────────────────────────
 //  ParseObject2_Quality — CAN 0x60C (7 bytes, Motorola)
 //
-//  DBC signals:
-//    Obj_ID          7|8   byte0
-//    Obj_DistLong_rms 15|5  byte1[7:3]   → 5-bit index → RMS table [m]
-//    Obj_DistLat_rms  10|5  byte1[2:0]+byte0... actually:
-//      DBC: Obj_DistLat_rms : 10|5@0+ → bit10 MSB
-//      byte1 bits[2:0] = 3 MSBs, byte0[7:5] doesn't exist since byte0=ID
-//      Let's re-derive from DBC positions carefully.
+//  Positions bit validées contre datasheet Continental ARS408-21 Table 44 :
 //
-//  Full correct layout (DBC bit positions, Motorola):
-//    Obj_ID            7|8    byte0
-//    Obj_DistLong_rms 15|5    byte1 bits[7:3]         → (d[1]>>3)&0x1F
-//    Obj_DistLat_rms  10|5    byte1[2:0] | byte0[7:5] — NO: byte0=ID
-//      Actually bit10 in Motorola = byte1 bit2, bit9=byte1 bit1, bit8=byte1 bit0,
-//      bit7=byte0 bit7, bit6=byte0 bit6 → but byte0=ID, so reading those bits gives ID bits
-//      → correct: (d[1]&0x07)<<2 | (d[0]>>6)&0x03 — overlaps with ID byte
-//      This is valid in CAN Motorola: different signals can share bytes.
-//    Obj_VrelLong_rms 21|5   byte2 bits[5:1]          → (d[2]>>1)&0x1F  (bit21=byte2 bit5)
-//    Obj_VrelLat_rms  16|5   byte2[0] | byte1...
-//      bit16=byte2 bit0, bit15..14 don't exist in 5-bit. Wait:
-//      bit16|5 → bits 16:12 → byte2 bit0, byte1 bits7:4 → overlaps DistLong
-//      Let's just use the validated cantools decode as ground truth:
-//    Obj_ArelLong_rms 27|5   byte3 bits[3:7] Motorola  → (d[3]>>3)&0x1F  (bit27=byte3 bit3)
-//    Obj_ArelLat_rms  38|5   byte4 bits[6:2]           → (d[4]>>2)&0x1F  (bit38=byte4 bit6)  -- wait
-//    Actually let me just do what cantools does — it validated correctly on real frames.
-//    Using the same shift logic as the original driver but with RMS table lookup added.
+//    Signal              start  len  Extraction C++
+//    ─────────────────────────────────────────────────────────────────
+//    Obj_ID               7     8    d[0]
+//    Obj_DistLong_rms    11     5    ((d[1]&0x0F)<<1) | (d[0]>>7)
+//    Obj_VrelLong_rms    17     5    ((d[2]&0x03)<<3) | ((d[1]>>5)&0x07)
+//    Obj_DistLat_rms     22     5    (d[2]>>2) & 0x1F
+//    Obj_VrelLat_rms     28     5    d[3] & 0x1F
+//    Obj_ArelLong_rms    27     5    ((d[3]&0x0F)<<1) | (d[2]>>7)
+//    Obj_ArelLat_rms     38     5    (d[4]>>2) & 0x1F
+//    Obj_ProbOfExist     55     3    (d[6]>>5) & 0x07
+//    Obj_MeasState       52     3    (d[6]>>2) & 0x07
 //
-//  Obj_ProbOfExist: 55|3 → byte6 bits[7:5] — wait DBC says 55|3@0+
-//    bit55 = byte6 bit7? No: bit55 in Motorola byte numbering:
-//    byte = bit/8 = 6 (byte6), bit_in_byte = bit%8 = 7. bit55 = byte6 bit7.
-//    3 bits [55:53] = byte6 [7:5] → (d[6]>>5)&0x07
-//  Obj_MeasState: 52|3 → byte6 [4:2] → (d[6]>>2)&0x07
-//
-//  RMS index → standard deviation table (from DBC VAL_ 1548):
-//    index 0 → <0.005, index 1 → <0.006, ..., index 30 → <10.0, index 31 → Invalid
+//  RMS index [0..31] → Table 44 → std deviation en m / m/s / m/s²
+//    index 31 = Invalid → retourne -1.0f
 // ─────────────────────────────────────────────────────────────────────────────
 
 // RMS lookup table — same for distance [m], velocity [m/s], acceleration [m/s²]
@@ -439,27 +421,24 @@ ars408::Obj_2_Quality Ars408Driver::ParseObject2_Quality(const std::array<uint8_
   q.Id = d[0];
 
   // Obj_DistLong_rms: 15|5 → byte1 [7:3]
-  q.LongitudinalDistanceXRms = rms_lookup((d[1] >> 3u) & 0x1Fu);
+  // Obj_DistLong_rms : start=11, len=5 → B1[3:0](4 bits) | B0[7](1 bit) — datasheet Table 44
+  q.LongitudinalDistanceXRms = rms_lookup(((d[1] & 0x0Fu) << 1u) | ((d[0] >> 7u) & 0x01u));
 
   // Obj_DistLat_rms: 10|5 → [10:6] = byte1[2:0] | byte0[7:6]
-  //   bit10=byte1[2], bit9=byte1[1], bit8=byte1[0], bit7=byte0[7], bit6=byte0[6]
-  uint8_t dist_lat_rms_idx = static_cast<uint8_t>(((d[1] & 0x07u) << 2u) | ((d[0] >> 6u) & 0x03u));
+
+  // Obj_DistLat_rms : start=22, len=5 → B2[6:2] — datasheet Table 44
+  uint8_t dist_lat_rms_idx = static_cast<uint8_t>((d[2] >> 2u) & 0x1Fu);
   q.LateralDistanceYRms = rms_lookup(dist_lat_rms_idx);
 
   // Obj_VrelLong_rms: 21|5 → byte2 [5:1]  (bit21=byte2[5])
-  q.RelativeLongitudinalVelocityXRms = rms_lookup((d[2] >> 1u) & 0x1Fu);
+  // Obj_VrelLong_rms : start=17, len=5 → B2[1:0](2 bits) | B1[7:5](3 bits) — datasheet Table 44
+  q.RelativeLongitudinalVelocityXRms = rms_lookup(((d[2] & 0x03u) << 3u) | ((d[1] >> 5u) & 0x07u));
 
   // Obj_VrelLat_rms: 16|5 → byte2[0] | byte1... wait: bit16=byte2[0], 5 bits [16:12]
   //   bit16=byte2[0], bit15=byte1[7], bit14=byte1[6], bit13=byte1[5], bit12=byte1[4]
   //   → overlaps with DistLong_rms bits in byte1 — this is Motorola packing
-  uint8_t vrel_lat_rms_idx = static_cast<uint8_t>(
-    ((d[2] & 0x01u) << 4u) | ((d[1] >> 4u) & 0x0Fu));
-  // But that gives 5 bits [4:0] = bit16 | bits[15:12]
-  // Simpler: VrelLat_rms at bit16|5 → raw = (d[2]&0x01)<<4 | d[1][7:4]
-  // Actually byte1[7:4] = (d[1]>>4)&0xF but byte1[7:3] is already DistLong_rms[4:0]
-  // These signals genuinely overlap per DBC packing → cantools handles transparently
-  // Using positions that match cantools verified output:
-  q.RelativeLateralVelocityYRms = rms_lookup(vrel_lat_rms_idx);
+  // Obj_VrelLat_rms : start=28, len=5 → B3[4:0] — datasheet Table 44
+  q.RelativeLateralVelocityYRms = rms_lookup(d[3] & 0x1Fu);
 
   // Obj_ArelLong_rms: 27|5 → byte3 bits[3:-1]? bit27=byte3[3], 5 bits [27:23]
   //   byte3[3:0]=bits[27:24], byte2[7]=bit23 → 5 bits: (d[3]&0x0F)<<1 | (d[2]>>7)
