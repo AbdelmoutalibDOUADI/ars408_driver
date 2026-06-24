@@ -185,8 +185,8 @@ public:
            << "SendQuality: " << (uint16_t)SendQuality << std::endl
            << "SendExtInfo: " << (uint16_t)SendExtInfo << std::endl
 
-           << "EgoMotionRxStatus: ";
-    switch (EgoMotionRxStatus) {
+           << "MotionRxStatus: ";
+    switch (MotionRxStatus) {
       case ars408::RadarState::MotionRx::INPUT_OK:
         stream << "INPUT_OK";
         break;
@@ -247,7 +247,7 @@ public:
   Config SendExtInfo;          /*True if extended information is sent for objects*/
   /* INPUT_OK, SPEED_MISSING, YAW_MISSING, SPEED_YAW_MISSING */
   enum MotionRx { INPUT_OK, SPEED_MISSING, YAW_MISSING, SPEED_YAW_MISSING, MOTION_ERROR };
-  MotionRx EgoMotionRxStatus; /*Shows the state of the speed and yaw rate input signals*/
+  MotionRx MotionRxStatus;    /*Shows the state of the speed and yaw rate input signals*/
   /* If true, the sensor’s high sensitivity mode is active */
   enum Rcs_ThresholdConfig { NORMAL, HIGH_SENSITIVITY, RCS_ERROR };
   Rcs_ThresholdConfig Rcs_Threshold;
@@ -585,7 +585,8 @@ public:
   float RelativeLateralVelocityYRms;
   float RelativeLongitudinalAccelerationXRms;
   float RelativeLateralAccelerationYRms;
-  float ExistenceProbability; /*Probability of existence*/
+  float ExistenceProbability; /*Probability of existence [0..1]*/
+  uint8_t MeasState{0};       /*0=Deleted 1=New 2=Measured 3=Predicted 4=DeletedForMerge 5=NewFromMerge*/
   Obj_2_Quality() : RadarCommand(ars408::OBJ_QUALITY_BASE) {}
 };
 
