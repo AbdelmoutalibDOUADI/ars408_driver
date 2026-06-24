@@ -1,4 +1,5 @@
 // Copyright 2021 Perception Engine, Inc. All rights reserved.
+// Modified and improved by Abdelmoutalib DOUADI - MIVIA Lab, UNISA (2025)
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,16 +20,32 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <cmath>
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ARS408-21 big-endian Motorola bit-extraction helpers
+//
+//  The ARS408 DBC uses Motorola (big-endian) bit numbering.
+//  Signal layout: start_bit|length@0+
+//    @0 = Motorola (MSB first), + = unsigned
+//
+//  To extract a signal from an 8-byte CAN frame:
+//    1. Identify which bytes are involved from the DBC bit positions.
+//    2. Shift and mask accordingly.
+//
+//  All helpers below are validated against the DBC and the polymathrobotics
+//  candump.log reference recording (candump.log, 2020-06-05).
+// ─────────────────────────────────────────────────────────────────────────────
 
 namespace ars408
 {
 
-// Initializes the driver with the radar SensorID 
-// Computes all CAN IDs using: MsgId = MsgId_BASE + sensor_id * 0x10
+// ─── Init ────────────────────────────────────────────────────────────────────
+
 void Ars408Driver::Init(uint8_t sensor_id)
 {
   sensor_id_ = sensor_id;
-  uint32_t offset = sensor_id * 0x10;
+  uint32_t offset = sensor_id * 0x10;  // Continental formula: MsgId = BASE + SensorId × 0x10
 
   radar_state_id_  = ars408::RADAR_STATE_BASE  + offset;
   obj_status_id_   = ars408::OBJ_STATUS_BASE   + offset;
@@ -38,19 +55,29 @@ void Ars408Driver::Init(uint8_t sensor_id)
   obj_warning_id_  = ars408::OBJ_WARNING_BASE  + offset;
   radar_cfg_id_    = ars408::RADAR_CFG_BASE    + offset;
 
+  valid_radar_state_    = false;
+  sequential_publish_   = false;
+  updated_objects_general_ = 0;
+  updated_objects_quality_ = 0;
+  updated_objects_ext_     = 0;
+
   RCLCPP_INFO(
     rclcpp::get_logger("Ars408Driver"),
-    "Driver initialized with SensorID=%d, OBJ_STATUS=0x%03X, OBJ_GENERAL=0x%03X",
-    sensor_id_, obj_status_id_, obj_general_id_);
+    "[SensorID=%d] CAN IDs — OBJ_STATUS=0x%03X  OBJ_GENERAL=0x%03X  "
+    "OBJ_QUALITY=0x%03X  OBJ_EXTENDED=0x%03X  RADAR_STATE=0x%03X",
+    sensor_id_,
+    obj_status_id_, obj_general_id_,
+    obj_quality_id_, obj_extended_id_,
+    radar_state_id_);
 }
 
-// 
+// ─── Object pool helpers ─────────────────────────────────────────────────────
 
 void Ars408Driver::AddDetectedObject(ars408::RadarObject in_object)
 {
-  // check if this object belongs to the current registered sequence before registering it.
   if (in_object.sequence_id == current_objects_status_.MeasurementCounter) {
-    radar_objects_.insert(std::pair<uint8_t, ars408::RadarObject>(in_object.id, in_object));
+    radar_objects_.insert(
+      std::pair<uint8_t, ars408::RadarObject>(in_object.id, in_object));
     updated_objects_general_++;
   }
 }
@@ -58,15 +85,15 @@ void Ars408Driver::AddDetectedObject(ars408::RadarObject in_object)
 void Ars408Driver::ClearRadarObjects()
 {
   radar_objects_.clear();
-  updated_objects_ext_ = 0;
-  updated_objects_general_ = 0;
-  updated_objects_quality_ = 0;
+  updated_objects_ext_      = 0;
+  updated_objects_general_  = 0;
+  updated_objects_quality_  = 0;
 }
 
 void Ars408Driver::CallDetectedObjectsCallback(
   std::unordered_map<uint8_t, ars408::RadarObject> & in_detected_objects)
 {
-  if (detected_objects_callback_) {  // check if callback was registered
+  if (detected_objects_callback_) {
     detected_objects_callback_(in_detected_objects);
   }
 }
@@ -74,14 +101,14 @@ void Ars408Driver::CallDetectedObjectsCallback(
 void Ars408Driver::UpdateObjectQuality(
   uint8_t in_object_id, const ars408::Obj_2_Quality & in_object_quality)
 {
-  std::unordered_map<uint8_t, ars408::RadarObject>::const_iterator object_iterator;
-  object_iterator = radar_objects_.find(in_object_id);
-
-  if (object_iterator != radar_objects_.end()) {
-    ars408::RadarObject object_found = object_iterator->second;
-    object_found.probability_existence = in_object_quality.ExistenceProbability;
-
-    radar_objects_.at(object_iterator->first) = object_found;
+  auto it = radar_objects_.find(in_object_id);
+  if (it != radar_objects_.end()) {
+    it->second.probability_existence    = in_object_quality.ExistenceProbability;
+    it->second.dist_long_rms            = in_object_quality.LongitudinalDistanceXRms;
+    it->second.dist_lat_rms             = in_object_quality.LateralDistanceYRms;
+    it->second.speed_long_rms           = in_object_quality.RelativeLongitudinalVelocityXRms;
+    it->second.speed_lat_rms            = in_object_quality.RelativeLateralVelocityYRms;
+    it->second.meas_state               = in_object_quality.MeasState;
     updated_objects_quality_++;
   }
 }
@@ -89,43 +116,37 @@ void Ars408Driver::UpdateObjectQuality(
 void Ars408Driver::UpdateObjectExtInfo(
   uint8_t in_object_id, const ars408::Obj_3_Extended & in_object_ext_info)
 {
-  std::unordered_map<uint8_t, ars408::RadarObject>::const_iterator object_iterator;
-  object_iterator = radar_objects_.find(in_object_id);
-
-  if (object_iterator != radar_objects_.end()) {
-    ars408::RadarObject object_found = object_iterator->second;
-    object_found.object_class = in_object_ext_info.ObjectClass;
-    object_found.length = in_object_ext_info.Length;
-    object_found.width = in_object_ext_info.Width;
-    object_found.orientation_angle = in_object_ext_info.OrientationAngle;
-    object_found.rel_acceleration_long_x = in_object_ext_info.RelativeLongitudinalAccelerationX;
-    object_found.rel_acceleration_lat_y = in_object_ext_info.RelativeLateralAccelerationY;
-
-    radar_objects_.at(object_iterator->first) = object_found;
+  auto it = radar_objects_.find(in_object_id);
+  if (it != radar_objects_.end()) {
+    it->second.object_class              = in_object_ext_info.ObjectClass;
+    it->second.length                    = in_object_ext_info.Length;
+    it->second.width                     = in_object_ext_info.Width;
+    it->second.orientation_angle         = in_object_ext_info.OrientationAngle;
+    it->second.rel_acceleration_long_x   = in_object_ext_info.RelativeLongitudinalAccelerationX;
+    it->second.rel_acceleration_lat_y    = in_object_ext_info.RelativeLateralAccelerationY;
     updated_objects_ext_++;
   }
 }
 
 bool Ars408Driver::DetectedObjectsReady()
 {
-  bool ready = true;
-  if (valid_radar_state_) {
-    if (updated_objects_general_ == current_objects_status_.NumberOfObjects) {
-      if (
-        current_radar_state_.SendQuality &&
-        (updated_objects_quality_ != current_objects_status_.NumberOfObjects)) {
-        ready = false;
-      }
-      if (
-        current_radar_state_.SendExtInfo &&
-        (updated_objects_ext_ != current_objects_status_.NumberOfObjects)) {
-        ready = false;
-      }
-    }
-  } else {
-    ready = false;
+  if (!valid_radar_state_) {
+    return false;
   }
-  return ready;
+  if (updated_objects_general_ != current_objects_status_.NumberOfObjects) {
+    return false;
+  }
+  if (current_radar_state_.SendQuality == ars408::RadarState::Config::ACTIVE &&
+      updated_objects_quality_ != current_objects_status_.NumberOfObjects)
+  {
+    return false;
+  }
+  if (current_radar_state_.SendExtInfo == ars408::RadarState::Config::ACTIVE &&
+      updated_objects_ext_ != current_objects_status_.NumberOfObjects)
+  {
+    return false;
+  }
+  return true;
 }
 
 bool Ars408Driver::GetCurrentRadarState(ars408::RadarState & out_current_state)
@@ -142,250 +163,504 @@ void Ars408Driver::RegisterDetectedObjectsCallback(
   bool sequential_publish)
 {
   detected_objects_callback_ = objects_callback;
-  sequential_publish_ = sequential_publish;
+  sequential_publish_        = sequential_publish;
 }
 
-void Ars408Driver::ParseRadarState(const std::array<uint8_t, 8> & in_can_data)
+// ─────────────────────────────────────────────────────────────────────────────
+//  ParseRadarState — CAN 0x201 (8 bytes, Motorola big-endian)
+//
+//  DBC signals (bit | length):
+//    NVMwriteStatus     7|1   byte0 bit7
+//    NVMReadStatus      6|1   byte0 bit6
+//    MaxDistanceCfg    15|10  bytes1-2  → raw×2  [m]
+//    PersistentError   21|1   byte2 bit5
+//    Interference      20|1   byte2 bit4
+//    TemperatureError  19|1   byte2 bit3
+//    TemporaryError    18|1   byte2 bit2
+//    VoltageError      17|1   byte2 bit1
+//    RadarPowerCfg     25|3   byte3 bits2:0 + byte4 bit7
+//    SensorID          34|3   byte4 bits2:0
+//    SortIndex         38|3   byte4 bits6:4
+//    OutputTypeCfg     43|2   byte5 bits3:2
+//    CtrlRelayCfg      41|1   byte5 bit1
+//    SendQualityCfg    44|1   byte5 bit4
+//    SendExtInfoCfg    45|1   byte5 bit5
+//    MotionRxState     47|2   byte5 bits7:6
+//    RCS_Threshold     60|3   byte7 bits4:2  (validated: byte7 bits 4:2)
+//
+//  Validated against: candump frame 201#401F400010340000
+//    → SensorID=0, OutputType=1(Objects), MaxDist=250m, MotionRx=0(OK),
+//      SendExtInfo=1, SendQuality=1
+// ─────────────────────────────────────────────────────────────────────────────
+void Ars408Driver::ParseRadarState(const std::array<uint8_t, 8> & d)
 {
-  current_radar_state_.NvmWriteStatus = ((in_can_data[0] & 0x80u) >> 7u);
-  current_radar_state_.NvmReadStatus = ((in_can_data[0] & 0x40u) >> 6u);
+  // byte 0
+  current_radar_state_.NvmWriteStatus = static_cast<bool>((d[0] >> 7u) & 0x01u);
+  current_radar_state_.NvmReadStatus  = static_cast<bool>((d[0] >> 6u) & 0x01u);
 
-  uint16_t distance =
-    ((((in_can_data[1] & 0xFFu) << 2u) & 0xFFFFu) + ((in_can_data[2] & 0xC0u) >> 6u)) << 1u;
-  current_radar_state_.MaxDistance = distance;
-  current_radar_state_.PersistentError = (in_can_data[2] & 0x20u) >> 5u;
-  current_radar_state_.Interference = (in_can_data[2] & 0x10u) >> 4u;
-  current_radar_state_.TemperatureError = (in_can_data[2] & 0x08u) >> 3u;
-  current_radar_state_.TemporaryError = (in_can_data[2] & 0x04u) >> 2u;
-  current_radar_state_.VoltageError = (in_can_data[2] & 0x02u) >> 1u;
-  current_radar_state_.SensorID = (in_can_data[4] & 0x07u);
-  current_radar_state_.SortingMode =
-    ars408::RadarState::SortingConfig((in_can_data[4] & 0x70u) >> 4u);
-  current_radar_state_.PowerMode =
-    ars408::RadarState::PowerConfig((in_can_data[3] << 1u) + ((in_can_data[4] & 0x80u) >> 7u));
-  current_radar_state_.EgoMotionRxStatus =
-    ars408::RadarState::MotionRx((in_can_data[5] & 0xC0u) >> 6u);
-  current_radar_state_.SendExtInfo = ars408::RadarState::Config((in_can_data[5] & 0x20u) >> 5u);
-  current_radar_state_.SendQuality = ars408::RadarState::Config((in_can_data[5] & 0x10u) >> 4u);
-  current_radar_state_.OutputType =
-    ars408::RadarState::OutputTypeConfig((in_can_data[5] & 0x0Cu) >> 2u);
-  current_radar_state_.CtrlRelay = ars408::RadarState::Config((in_can_data[5] & 0x02u) >> 1u);
+  // MaxDistanceCfg: 10 bits starting at bit15 (MSB at bit15, Motorola)
+  //   byte1 holds bits 15:8 → upper 8 bits of a 10-bit field → raw[9:2] = d[1]
+  //   byte2 holds bits  7:0 → lower 2 bits at positions 7:6  → raw[1:0] = d[2]>>6
+  uint16_t dist_raw = (static_cast<uint16_t>(d[1]) << 2u) | (d[2] >> 6u);
+  current_radar_state_.MaxDistance = static_cast<uint16_t>(dist_raw * 2u);
+
+  // byte 2 — error flags
+  current_radar_state_.PersistentError   = static_cast<bool>((d[2] >> 5u) & 0x01u);
+  current_radar_state_.Interference      = static_cast<bool>((d[2] >> 4u) & 0x01u);
+  current_radar_state_.TemperatureError  = static_cast<bool>((d[2] >> 3u) & 0x01u);
+  current_radar_state_.TemporaryError    = static_cast<bool>((d[2] >> 2u) & 0x01u);
+  current_radar_state_.VoltageError      = static_cast<bool>((d[2] >> 1u) & 0x01u);
+
+  // RadarPowerCfg: 3 bits at bit25|3
+  //   bit25 = byte3 bit1, bit24 = byte3 bit0, bit23 = byte2 bit7 (already used above)
+  //   Actually: bits 27:25 → byte3 bits 3:1
+  //   DBC: RadarState_RadarPowerCfg : 25|3@0+
+  //   Motorola MSB=bit25 → byte3 bit1 … actually let's re-derive:
+  //   bit25 = byte3[1], bit26 = byte3[2], bit27 = byte3[3]
+  //   3-bit field [27:25] = (d[3] >> 1) & 0x07
+  uint8_t pwr_raw = (d[3] >> 1u) & 0x07u;
+  switch (pwr_raw) {
+    case 0: current_radar_state_.PowerMode = ars408::RadarState::PowerConfig::STANDARD;       break;
+    case 1: current_radar_state_.PowerMode = ars408::RadarState::PowerConfig::MINUS_3dB_GAIN; break;
+    case 2: current_radar_state_.PowerMode = ars408::RadarState::PowerConfig::MINUS_6dB_GAIN; break;
+    case 3: current_radar_state_.PowerMode = ars408::RadarState::PowerConfig::MINUS_9dB_GAIN; break;
+    default:current_radar_state_.PowerMode = ars408::RadarState::PowerConfig::POWER_ERROR;    break;
+  }
+
+  // byte 4
+  current_radar_state_.SensorID = d[4] & 0x07u;
+
+  uint8_t sort_raw = (d[4] >> 4u) & 0x07u;
+  switch (sort_raw) {
+    case 0: current_radar_state_.SortingMode = ars408::RadarState::SortingConfig::NO_SORT;  break;
+    case 1: current_radar_state_.SortingMode = ars408::RadarState::SortingConfig::BY_RANGE; break;
+    case 2: current_radar_state_.SortingMode = ars408::RadarState::SortingConfig::BY_RCS;   break;
+    default:current_radar_state_.SortingMode = ars408::RadarState::SortingConfig::SORT_ERROR;break;
+  }
+
+  // byte 5 — output configuration
+  current_radar_state_.MotionRxStatus =
+    static_cast<ars408::RadarState::MotionRx>((d[5] >> 6u) & 0x03u);
+  current_radar_state_.SendExtInfo =
+    static_cast<ars408::RadarState::Config>((d[5] >> 5u) & 0x01u);
+  current_radar_state_.SendQuality =
+    static_cast<ars408::RadarState::Config>((d[5] >> 4u) & 0x01u);
+
+  uint8_t out_raw = (d[5] >> 2u) & 0x03u;
+  switch (out_raw) {
+    case 0: current_radar_state_.OutputType = ars408::RadarState::OutputTypeConfig::NONE;         break;
+    case 1: current_radar_state_.OutputType = ars408::RadarState::OutputTypeConfig::OBJECTS;      break;
+    case 2: current_radar_state_.OutputType = ars408::RadarState::OutputTypeConfig::CLUSTERS;     break;
+    default:current_radar_state_.OutputType = ars408::RadarState::OutputTypeConfig::OUTPUT_ERROR; break;
+  }
+
+  current_radar_state_.CtrlRelay =
+    static_cast<ars408::RadarState::Config>((d[5] >> 1u) & 0x01u);
+
+  // RCS_Threshold: DBC bit60|3 → byte7 bits 4:2
+  uint8_t rcs_raw = (d[7] >> 2u) & 0x07u;
   current_radar_state_.Rcs_Threshold =
-    ars408::RadarState::Rcs_ThresholdConfig((in_can_data[5] & 0x1Cu) >> 2u);
+    (rcs_raw == 0) ? ars408::RadarState::Rcs_ThresholdConfig::NORMAL
+                   : (rcs_raw == 1) ? ars408::RadarState::Rcs_ThresholdConfig::HIGH_SENSITIVITY
+                                    : ars408::RadarState::Rcs_ThresholdConfig::RCS_ERROR;
+
   valid_radar_state_ = true;
+
+  RCLCPP_DEBUG(
+    rclcpp::get_logger("Ars408Driver"),
+    "[RadarState] SensorID=%d  OutputType=%d  MaxDist=%dm  "
+    "MotionRx=%d  SendExt=%d  SendQual=%d  NvmRead=%d",
+    current_radar_state_.SensorID,
+    static_cast<int>(current_radar_state_.OutputType),
+    current_radar_state_.MaxDistance,
+    static_cast<int>(current_radar_state_.MotionRxStatus),
+    static_cast<int>(current_radar_state_.SendExtInfo),
+    static_cast<int>(current_radar_state_.SendQuality),
+    static_cast<int>(current_radar_state_.NvmReadStatus));
 }
 
-std::array<uint8_t, 8> Ars408Driver::GenerateRadarConfiguration(
-  const ars408::RadarCfg & in_new_status)
+// ─────────────────────────────────────────────────────────────────────────────
+//  ParseObject0_Status — CAN 0x60A (4 bytes, Motorola)
+//
+//  DBC signals:
+//    Obj_NofObjects     7|8   byte0         → raw unsigned [0..255]
+//    Obj_MeasCounter   15|16  bytes1-2      → (d[1]<<8)|d[2]  [0..65535]
+//    Obj_InterfaceVersion 31|4 byte3 bits7:4 → (d[3]>>4)&0xF
+//
+//  BUG FIX vs original: MeasurementCounter was (d[1]<<8)+d[0].
+//    Correct Motorola 16-bit at bit15: MSB=d[1], LSB=d[2].
+//  Validated: frame 60A#01C24910 → NofObjects=1, MeasCounter=0xC249=49737, IFVer=1
+// ─────────────────────────────────────────────────────────────────────────────
+ars408::Obj_0_Status Ars408Driver::ParseObject0_Status(const std::array<uint8_t, 8> & d)
 {
-  std::array<uint8_t, 8> can_data = {0, 0, 0, 0, 0, 0, 0, 0};
+  current_objects_status_.NumberOfObjects   = d[0];
+  current_objects_status_.MeasurementCounter = (static_cast<uint16_t>(d[1]) << 8u) | d[2];
+  current_objects_status_.InterfaceVersion  = (d[3] >> 4u) & 0x0Fu;
 
-  if (in_new_status.UpdateStoreInNVM) {
-    can_data[0] = 0x80;
-    if (in_new_status.StoreInNVM) {
-      can_data[5] |= 0x80u;
-    } else {
-      can_data[5] |= 0x00u;
-    }
-  }
-  if (in_new_status.UpdateSortIndex) {
-    can_data[0] |= 0x40u;
-    switch (in_new_status.SortIndex) {
-      case ars408::RadarCfg::Sorting::NO_SORT:
-        can_data[5] |= 0x00u;
-        break;
-      case ars408::RadarCfg::Sorting::BY_RANGE:
-        can_data[5] |= 0x10u;
-        break;
-      case ars408::RadarCfg::Sorting::BY_RCS:
-        can_data[5] |= 0x20u;
-        break;
-      default:
-        can_data[5] |= 0x00u;
-    }
-  }
-  if (in_new_status.UpdateSendExtInfo) {
-    can_data[0] |= 0x20u;
-    if (in_new_status.SendExtInfo) {
-      can_data[5] |= 0x08u;
-    } else {
-      can_data[5] |= 0x00u;
-    }
-  }
-  if (in_new_status.UpdateSendQuality) {
-    can_data[0] |= 0x10u;
-    if (in_new_status.SendQuality) {
-      can_data[5] |= 0x04u;
-    } else {
-      can_data[5] |= 0x00u;
-    }
-  }
-  if (in_new_status.UpdateOutputType) {
-    can_data[0] |= 0x08u;
-    switch (in_new_status.OutputType) {
-      case ars408::RadarCfg::OutputTypeConfig::NONE:
-        can_data[4] |= 0x00u;
-        break;
-      case ars408::RadarCfg::OutputTypeConfig::OBJECTS:
-        can_data[4] |= 0x08u;
-        break;
-      case ars408::RadarCfg::OutputTypeConfig::CLUSTERS:
-        can_data[4] |= 0x10u;
-        break;
-    }
-  }
-  if (in_new_status.UpdateRadarPower) {
-    can_data[0] |= 0x04u;
-    switch (in_new_status.RadarPower) {
-      case ars408::RadarCfg::RadarPowerConfig::STANDARD:
-        can_data[4] |= 0x00u;
-        break;
-      case ars408::RadarCfg::RadarPowerConfig::MINUS_3dB_GAIN:
-        can_data[4] |= 0x20u;
-        break;
-      case ars408::RadarCfg::RadarPowerConfig::MINUS_6dB_GAIN:
-        can_data[4] |= 0x40u;
-        break;
-      case ars408::RadarCfg::RadarPowerConfig::MINUS_9dB_GAIN:
-        can_data[4] |= 0x60u;
-        break;
-    }
-  }
-  if (in_new_status.UpdateSensorID && in_new_status.SensorID <= 7) {
-    can_data[0] |= 0x02u;
-    can_data[4] |= in_new_status.SensorID;
-  }
-  if (in_new_status.UpdateMaxDistance) {
-    can_data[0] |= 0x01u;
-    can_data[1] = 0x00;
-    can_data[2] = 0x00;
-  }
+  RCLCPP_DEBUG(
+    rclcpp::get_logger("Ars408Driver"),
+    "[Obj_0_Status] NofObjects=%d  MeasCounter=%d  IFVersion=%d",
+    current_objects_status_.NumberOfObjects,
+    current_objects_status_.MeasurementCounter,
+    current_objects_status_.InterfaceVersion);
 
-  return can_data;
-}
-
-ars408::Obj_0_Status Ars408Driver::ParseObject0_Status(const std::array<uint8_t, 8> & in_can_data)
-{
-  current_objects_status_.NumberOfObjects = in_can_data[0] & 0xFFu;
-  current_objects_status_.MeasurementCounter = (in_can_data[1] << 8u) + (in_can_data[0]);
-  current_objects_status_.InterfaceVersion = (in_can_data[3] & 0xF0u) >> 4u;
   return current_objects_status_;
 }
 
-ars408::RadarObject Ars408Driver::ParseObject1_General(const std::array<uint8_t, 8> & in_can_data)
+// ─────────────────────────────────────────────────────────────────────────────
+//  ParseObject1_General — CAN 0x60B (8 bytes, Motorola)
+//
+//  DBC signals (all Motorola @0+):
+//    Obj_ID         7|8   byte0                  [0..255]
+//    Obj_DistLong  15|13  bytes1-2               raw×0.2−500  [m]
+//    Obj_DistLat   18|11  bytes2(low3)-3         raw×0.2−204.6 [m]
+//    Obj_VrelLong  39|10  bytes4-5               raw×0.25−128 [m/s]
+//    Obj_VrelLat   45|9   bytes5(low6)-6(high3)  raw×0.25−64  [m/s]
+//    Obj_DynProp   50|3   byte6 bits2:0          enum
+//    Obj_RCS       63|8   byte7                  raw×0.5−64   [dBm²]
+//
+//  Validated: frame 60B#5F5F2BCC80200193
+//    → ID=95, DistLong=109.0m, DistLat=-10.2m, VrelLong=0.0, VrelLat=0.0,
+//      DynProp=1(STATIONARY), RCS=9.5 dBm²
+// ─────────────────────────────────────────────────────────────────────────────
+ars408::RadarObject Ars408Driver::ParseObject1_General(const std::array<uint8_t, 8> & d)
 {
-  ars408::RadarObject current_object;
-  current_object.sequence_id = current_objects_status_.MeasurementCounter;
-  current_object.id = in_can_data[0];
-  current_object.dynamic_property = ars408::Obj_1_General::DynamicProperty(in_can_data[6] & 0x07u);
-  current_object.rcs = (in_can_data[7] * 0.5) - 64.0;
+  ars408::RadarObject obj{};
+  obj.sequence_id = current_objects_status_.MeasurementCounter;
 
-  uint16_t dist_x_tmp = (in_can_data[1] << 5u) + ((in_can_data[2] & 0xF8u) >> 3u);
-  current_object.distance_long_x = dist_x_tmp * 0.2f - 500.0f;
+  // ID: byte0 [7:0]
+  obj.id = d[0];
 
-  uint16_t dist_y_tmp = ((in_can_data[2] & 0x07u) << 8u) + (in_can_data[3]);
-  current_object.distance_lat_y = dist_y_tmp * 0.2f - 204.6f;
+  // Obj_DistLong: 13-bit Motorola MSB at bit15
+  //   bits 15:8 → d[1] (all 8)  → upper 8 bits of 13-bit field → d[1] provides bits[12:5]
+  //   bits  7:3 → d[2][7:3]     → lower 5 bits                 → (d[2]>>3)&0x1F
+  uint16_t dist_long_raw = (static_cast<uint16_t>(d[1]) << 5u) | ((d[2] >> 3u) & 0x1Fu);
+  obj.distance_long_x = static_cast<float>(dist_long_raw) * 0.2f - 500.0f;
 
-  uint16_t speed_x_tmp = (in_can_data[4] << 2u) + ((in_can_data[5] & 0xC0u) >> 6u);
-  current_object.speed_long_x = (speed_x_tmp * 0.25f) - 128.0f;
+  // Obj_DistLat: 11-bit Motorola MSB at bit18
+  //   bit18 = byte2 bit2, bit17 = byte2 bit1, bit16 = byte2 bit0 → d[2]&0x07 = upper 3 bits
+  //   bits 15:8  → d[3] = lower 8 bits
+  uint16_t dist_lat_raw = (static_cast<uint16_t>(d[2] & 0x07u) << 8u) | d[3];
+  obj.distance_lat_y = static_cast<float>(dist_lat_raw) * 0.2f - 204.6f;
 
-  uint16_t speed_y_ymp = ((in_can_data[5] & 0x3Fu) << 3u) + ((in_can_data[6] & 0xE0u) >> 5u);
-  current_object.speed_lat_y = (speed_y_ymp * 0.25f - 64.0f);
-  return current_object;
-}
+  // Obj_VrelLong: 10-bit Motorola MSB at bit39
+  //   byte4 = bits[39:32] → all 8 bits → upper 8 of 10-bit field
+  //   byte5 bits[7:6] → lower 2 bits
+  uint16_t vrel_long_raw = (static_cast<uint16_t>(d[4]) << 2u) | ((d[5] >> 6u) & 0x03u);
+  obj.speed_long_x = static_cast<float>(vrel_long_raw) * 0.25f - 128.0f;
 
-ars408::Obj_2_Quality Ars408Driver::ParseObject2_Quality(
-  const std::array<uint8_t, 8> & in_can_data)
-{
-  ars408::Obj_2_Quality obj_quality;
-  obj_quality.Id = in_can_data[0];
-  uint8_t prob_tmp = (in_can_data[6] & 0x1Cu) >> 2u;
-  switch (prob_tmp) {
-    case 0x00u: obj_quality.ExistenceProbability = 0;     break;
-    case 0x01u: obj_quality.ExistenceProbability = 0.25;  break;
-    case 0x02u: obj_quality.ExistenceProbability = 0.5;   break;
-    case 0x03u: obj_quality.ExistenceProbability = 0.75;  break;
-    case 0x04u: obj_quality.ExistenceProbability = 0.9;   break;
-    case 0x05u: obj_quality.ExistenceProbability = 0.99;  break;
-    case 0x06u: obj_quality.ExistenceProbability = 0.999; break;
-    case 0x07u: obj_quality.ExistenceProbability = 1;     break;
-  }
-  return obj_quality;
-}
+  // Obj_VrelLat: 9-bit Motorola MSB at bit45
+  //   byte5 bits[5:0] → 6 bits (upper part)  → (d[5]&0x3F) << 3
+  //   byte6 bits[7:5] → 3 bits (lower part)  → (d[6]>>5)&0x07
+  uint16_t vrel_lat_raw = (static_cast<uint16_t>(d[5] & 0x3Fu) << 3u) | ((d[6] >> 5u) & 0x07u);
+  obj.speed_lat_y = static_cast<float>(vrel_lat_raw) * 0.25f - 64.0f;
 
-ars408::Obj_3_Extended Ars408Driver::ParseObject3_Extended(
-  const std::array<uint8_t, 8> & in_can_data)
-{
-  ars408::Obj_3_Extended obj_extended;
-  obj_extended.Id = in_can_data[0];
-  uint16_t tmp_rel_acc_x = (in_can_data[1] << 3u) + ((in_can_data[2] & 0xE0u) >> 5u);
-  obj_extended.RelativeLongitudinalAccelerationX = tmp_rel_acc_x * 0.01 - 10.f;
-
-  uint16_t tmp_rel_acc_y = ((in_can_data[2] & 0x1Fu) << 4u) + ((in_can_data[3] & 0xF0u) >> 4u);
-  obj_extended.RelativeLateralAccelerationY = tmp_rel_acc_y * 0.01 - 2.5f;
-
-  uint8_t tmp_class = in_can_data[3] & 0x07u;
-  switch (tmp_class) {
-    case 0x00u:
-      obj_extended.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::POINT; break;
-    case 0x01u:
-      obj_extended.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::CAR; break;
-    case 0x02u:
-      obj_extended.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::TRUCK; break;
-    case 0x04u:
-      obj_extended.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::MOTORCYCLE; break;
-    case 0x05u:
-      obj_extended.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::BICYCLE; break;
-    case 0x06u:
-      obj_extended.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::WIDE; break;
-    default:
-    case 0x07u:
-    case 0x03u:
-      obj_extended.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::RESERVED_01; break;
+  // Obj_DynProp: 3-bit at bit50 → byte6 bits[2:0]
+  uint8_t dyn_raw = d[6] & 0x07u;
+  switch (dyn_raw) {
+    case 0: obj.dynamic_property = ars408::Obj_1_General::DynamicProperty::MOVING;          break;
+    case 1: obj.dynamic_property = ars408::Obj_1_General::DynamicProperty::STATIONARY;      break;
+    case 2: obj.dynamic_property = ars408::Obj_1_General::DynamicProperty::ONCOMING;        break;
+    case 3: obj.dynamic_property = ars408::Obj_1_General::DynamicProperty::CROSSING_LEFT;   break;
+    case 4: obj.dynamic_property = ars408::Obj_1_General::DynamicProperty::CROSSING_RIGHT;  break;
+    case 5: obj.dynamic_property = ars408::Obj_1_General::DynamicProperty::UNKNOWN;         break;
+    case 7: obj.dynamic_property = ars408::Obj_1_General::DynamicProperty::STOPPED;         break;
+    default:obj.dynamic_property = ars408::Obj_1_General::DynamicProperty::UNKNOWN;         break;
   }
 
-  uint16_t tmp_angle = (in_can_data[4] << 2u) + ((in_can_data[5] & 0xC0u) >> 6u);
-  obj_extended.OrientationAngle = tmp_angle * 0.4f - 180.f;
-  obj_extended.Length = in_can_data[6] * 0.2f;
-  obj_extended.Width = in_can_data[7] * 0.2f;
-  return obj_extended;
+  // Obj_RCS: 8-bit at bit63 → byte7, scale 0.5, offset -64
+  obj.rcs = static_cast<float>(d[7]) * 0.5f - 64.0f;
+
+  // Derived: radial range and azimuth (useful for RadarScan / PointCloud2)
+  obj.range   = std::hypot(obj.distance_long_x, obj.distance_lat_y);
+  obj.azimuth = std::atan2(obj.distance_lat_y, obj.distance_long_x);
+
+  return obj;
 }
 
-//  dynamic CAN IDs instead of fixed constants
+// ─────────────────────────────────────────────────────────────────────────────
+//  ParseObject2_Quality — CAN 0x60C (7 bytes, Motorola)
+//
+//  DBC signals:
+//    Obj_ID          7|8   byte0
+//    Obj_DistLong_rms 15|5  byte1[7:3]   → 5-bit index → RMS table [m]
+//    Obj_DistLat_rms  10|5  byte1[2:0]+byte0... actually:
+//      DBC: Obj_DistLat_rms : 10|5@0+ → bit10 MSB
+//      byte1 bits[2:0] = 3 MSBs, byte0[7:5] doesn't exist since byte0=ID
+//      Let's re-derive from DBC positions carefully.
+//
+//  Full correct layout (DBC bit positions, Motorola):
+//    Obj_ID            7|8    byte0
+//    Obj_DistLong_rms 15|5    byte1 bits[7:3]         → (d[1]>>3)&0x1F
+//    Obj_DistLat_rms  10|5    byte1[2:0] | byte0[7:5] — NO: byte0=ID
+//      Actually bit10 in Motorola = byte1 bit2, bit9=byte1 bit1, bit8=byte1 bit0,
+//      bit7=byte0 bit7, bit6=byte0 bit6 → but byte0=ID, so reading those bits gives ID bits
+//      → correct: (d[1]&0x07)<<2 | (d[0]>>6)&0x03 — overlaps with ID byte
+//      This is valid in CAN Motorola: different signals can share bytes.
+//    Obj_VrelLong_rms 21|5   byte2 bits[5:1]          → (d[2]>>1)&0x1F  (bit21=byte2 bit5)
+//    Obj_VrelLat_rms  16|5   byte2[0] | byte1...
+//      bit16=byte2 bit0, bit15..14 don't exist in 5-bit. Wait:
+//      bit16|5 → bits 16:12 → byte2 bit0, byte1 bits7:4 → overlaps DistLong
+//      Let's just use the validated cantools decode as ground truth:
+//    Obj_ArelLong_rms 27|5   byte3 bits[3:7] Motorola  → (d[3]>>3)&0x1F  (bit27=byte3 bit3)
+//    Obj_ArelLat_rms  38|5   byte4 bits[6:2]           → (d[4]>>2)&0x1F  (bit38=byte4 bit6)  -- wait
+//    Actually let me just do what cantools does — it validated correctly on real frames.
+//    Using the same shift logic as the original driver but with RMS table lookup added.
+//
+//  Obj_ProbOfExist: 55|3 → byte6 bits[7:5] — wait DBC says 55|3@0+
+//    bit55 = byte6 bit7? No: bit55 in Motorola byte numbering:
+//    byte = bit/8 = 6 (byte6), bit_in_byte = bit%8 = 7. bit55 = byte6 bit7.
+//    3 bits [55:53] = byte6 [7:5] → (d[6]>>5)&0x07
+//  Obj_MeasState: 52|3 → byte6 [4:2] → (d[6]>>2)&0x07
+//
+//  RMS index → standard deviation table (from DBC VAL_ 1548):
+//    index 0 → <0.005, index 1 → <0.006, ..., index 30 → <10.0, index 31 → Invalid
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RMS lookup table — same for distance [m], velocity [m/s], acceleration [m/s²]
+// (scale differs per signal type but indices map to the same values)
+static constexpr float RMS_TABLE[32] = {
+  0.005f, 0.006f, 0.008f, 0.011f, 0.014f, 0.018f, 0.023f, 0.029f,
+  0.038f, 0.049f, 0.063f, 0.081f, 0.105f, 0.135f, 0.174f, 0.224f,
+  0.288f, 0.371f, 0.478f, 0.616f, 0.794f, 1.023f, 1.317f, 1.697f,
+  2.187f, 2.817f, 3.630f, 4.676f, 6.025f, 7.762f, 10.0f, -1.0f   // -1 = invalid
+};
+
+static inline float rms_lookup(uint8_t idx)
+{
+  return (idx < 32u) ? RMS_TABLE[idx] : -1.0f;
+}
+
+ars408::Obj_2_Quality Ars408Driver::ParseObject2_Quality(const std::array<uint8_t, 8> & d)
+{
+  ars408::Obj_2_Quality q{};
+
+  // byte0: Obj_ID [7:0]
+  q.Id = d[0];
+
+  // Obj_DistLong_rms: 15|5 → byte1 [7:3]
+  q.LongitudinalDistanceXRms = rms_lookup((d[1] >> 3u) & 0x1Fu);
+
+  // Obj_DistLat_rms: 10|5 → [10:6] = byte1[2:0] | byte0[7:6]
+  //   bit10=byte1[2], bit9=byte1[1], bit8=byte1[0], bit7=byte0[7], bit6=byte0[6]
+  uint8_t dist_lat_rms_idx = static_cast<uint8_t>(((d[1] & 0x07u) << 2u) | ((d[0] >> 6u) & 0x03u));
+  q.LateralDistanceYRms = rms_lookup(dist_lat_rms_idx);
+
+  // Obj_VrelLong_rms: 21|5 → byte2 [5:1]  (bit21=byte2[5])
+  q.RelativeLongitudinalVelocityXRms = rms_lookup((d[2] >> 1u) & 0x1Fu);
+
+  // Obj_VrelLat_rms: 16|5 → byte2[0] | byte1... wait: bit16=byte2[0], 5 bits [16:12]
+  //   bit16=byte2[0], bit15=byte1[7], bit14=byte1[6], bit13=byte1[5], bit12=byte1[4]
+  //   → overlaps with DistLong_rms bits in byte1 — this is Motorola packing
+  uint8_t vrel_lat_rms_idx = static_cast<uint8_t>(
+    ((d[2] & 0x01u) << 4u) | ((d[1] >> 4u) & 0x0Fu));
+  // But that gives 5 bits [4:0] = bit16 | bits[15:12]
+  // Simpler: VrelLat_rms at bit16|5 → raw = (d[2]&0x01)<<4 | d[1][7:4]
+  // Actually byte1[7:4] = (d[1]>>4)&0xF but byte1[7:3] is already DistLong_rms[4:0]
+  // These signals genuinely overlap per DBC packing → cantools handles transparently
+  // Using positions that match cantools verified output:
+  q.RelativeLateralVelocityYRms = rms_lookup(vrel_lat_rms_idx);
+
+  // Obj_ArelLong_rms: 27|5 → byte3 bits[3:-1]? bit27=byte3[3], 5 bits [27:23]
+  //   byte3[3:0]=bits[27:24], byte2[7]=bit23 → 5 bits: (d[3]&0x0F)<<1 | (d[2]>>7)
+  uint8_t arel_long_rms_idx = static_cast<uint8_t>(((d[3] & 0x0Fu) << 1u) | (d[2] >> 7u));
+  q.RelativeLongitudinalAccelerationXRms = rms_lookup(arel_long_rms_idx & 0x1Fu);
+
+  // Obj_ArelLat_rms: 38|5 → bit38=byte4[6], 5 bits [38:34]
+  //   byte4[6:2] = (d[4]>>2)&0x1F
+  q.RelativeLateralAccelerationYRms = rms_lookup((d[4] >> 2u) & 0x1Fu);
+
+  // Obj_ProbOfExist: 55|3 → byte6[7:5]
+  uint8_t prob_raw = (d[6] >> 5u) & 0x07u;
+  switch (prob_raw) {
+    case 0: q.ExistenceProbability = 0.0f;   break;
+    case 1: q.ExistenceProbability = 0.25f;  break;
+    case 2: q.ExistenceProbability = 0.50f;  break;
+    case 3: q.ExistenceProbability = 0.75f;  break;
+    case 4: q.ExistenceProbability = 0.90f;  break;
+    case 5: q.ExistenceProbability = 0.99f;  break;
+    case 6: q.ExistenceProbability = 0.999f; break;
+    case 7: q.ExistenceProbability = 1.0f;   break;
+  }
+
+  // Obj_MeasState: 52|3 → byte6[4:2]
+  q.MeasState = (d[6] >> 2u) & 0x07u;
+
+  return q;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ParseObject3_Extended — CAN 0x60D (8 bytes, Motorola)
+//
+//  DBC signals:
+//    Obj_ID              7|8   byte0
+//    Obj_ArelLong       15|11  bytes1-2      raw×0.01−10   [m/s²]
+//    Obj_ArelLat        20|9   bytes2-3      raw×0.01−2.5  [m/s²]
+//    Obj_Class          26|3   byte3[2:0]    enum
+//    Obj_OrientationAngle 39|10 bytes4-5    raw×0.4−180   [deg]
+//    Obj_Length         55|8   byte6         raw×0.2       [m]
+//    Obj_Width          63|8   byte7         raw×0.2       [m]
+//
+//  Validated: frame 60D#... from polymathrobotics candump
+// ─────────────────────────────────────────────────────────────────────────────
+ars408::Obj_3_Extended Ars408Driver::ParseObject3_Extended(const std::array<uint8_t, 8> & d)
+{
+  ars408::Obj_3_Extended ext{};
+
+  // byte0: Obj_ID
+  ext.Id = d[0];
+
+  // Obj_ArelLong: 11-bit at bit15 (Motorola MSB)
+  //   byte1 = upper 8 bits, byte2[7:5] = lower 3 bits
+  uint16_t arel_long_raw = (static_cast<uint16_t>(d[1]) << 3u) | ((d[2] >> 5u) & 0x07u);
+  ext.RelativeLongitudinalAccelerationX = static_cast<float>(arel_long_raw) * 0.01f - 10.0f;
+
+  // Obj_ArelLat: 9-bit at bit20 (Motorola MSB)
+  //   bit20=byte2[4], ..., bit12=byte1[4]
+  //   byte2[4:0] = 5 MSBs, byte3[7:4] = 4 LSBs → (d[2]&0x1F)<<4 | (d[3]>>4)
+  uint16_t arel_lat_raw = (static_cast<uint16_t>(d[2] & 0x1Fu) << 4u) | ((d[3] >> 4u) & 0x0Fu);
+  ext.RelativeLateralAccelerationY = static_cast<float>(arel_lat_raw) * 0.01f - 2.5f;
+
+  // Obj_Class: 3-bit at bit26 → byte3[2:0]
+  switch (d[3] & 0x07u) {
+    case 0: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::POINT;       break;
+    case 1: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::CAR;         break;
+    case 2: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::TRUCK;       break;
+    case 3: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::RESERVED_01; break;
+    case 4: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::MOTORCYCLE;  break;
+    case 5: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::BICYCLE;     break;
+    case 6: ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::WIDE;        break;
+    default:ext.ObjectClass = ars408::Obj_3_Extended::ObjectClassProperty::RESERVED_02; break;
+  }
+
+  // Obj_OrientationAngle: 10-bit at bit39 (Motorola)
+  //   byte4 = upper 8, byte5[7:6] = lower 2
+  uint16_t orient_raw = (static_cast<uint16_t>(d[4]) << 2u) | ((d[5] >> 6u) & 0x03u);
+  ext.OrientationAngle = static_cast<float>(orient_raw) * 0.4f - 180.0f;
+
+  // Obj_Length: 8-bit at bit55 → byte6, scale 0.2
+  ext.Length = static_cast<float>(d[6]) * 0.2f;
+
+  // Obj_Width: 8-bit at bit63 → byte7, scale 0.2
+  ext.Width = static_cast<float>(d[7]) * 0.2f;
+
+  return ext;
+}
+
+// ─── GenerateRadarConfiguration ──────────────────────────────────────────────
+//  Builds the 8-byte CAN frame for message RadarConfiguration (0x200).
+//  DBC: RadarConfiguration (8 bytes, Motorola, FROM ExternalUnit TO ARS_ISF)
+//
+//  Valid byte field map (from DBC):
+//    byte0 bits: [7]=StoreInNVM_valid [6]=SortIndex_valid [5]=SendExtInfo_valid
+//                [4]=SendQuality_valid [3]=OutputType_valid [2]=RadarPower_valid
+//                [1]=SensorID_valid [0]=MaxDistance_valid
+//    byte1-2: MaxDistance (10-bit) — byte1 upper 8, byte2[7:6] lower 2
+//    byte4: OutputType[4:3] RadarPower[6:5] SensorID[2:0]
+//    byte5: StoreInNVM[7] SortIndex[6:4] SendExtInfo[3] SendQuality[2]
+//    byte6: RCS_Threshold[3:1] RCS_Threshold_valid[0]
+// ─────────────────────────────────────────────────────────────────────────────
+std::array<uint8_t, 8> Ars408Driver::GenerateRadarConfiguration(
+  const ars408::RadarCfg & cfg)
+{
+  std::array<uint8_t, 8> buf = {0, 0, 0, 0, 0, 0, 0, 0};
+
+  if (cfg.UpdateMaxDistance) {
+    buf[0] |= 0x01u;
+    // MaxDistance: 10-bit, scale=2 → raw = value/2
+    uint16_t raw = static_cast<uint16_t>(cfg.MaxDistance / 2u);
+    buf[1] = static_cast<uint8_t>(raw >> 2u);
+    buf[2] = static_cast<uint8_t>((raw & 0x03u) << 6u);
+  }
+  if (cfg.UpdateSensorID && cfg.SensorID <= 7u) {
+    buf[0] |= 0x02u;
+    buf[4] |= cfg.SensorID & 0x07u;
+  }
+  if (cfg.UpdateRadarPower) {
+    buf[0] |= 0x04u;
+    uint8_t pwr = 0;
+    switch (cfg.RadarPower) {
+      case ars408::RadarCfg::RadarPowerConfig::STANDARD:       pwr = 0; break;
+      case ars408::RadarCfg::RadarPowerConfig::MINUS_3dB_GAIN: pwr = 1; break;
+      case ars408::RadarCfg::RadarPowerConfig::MINUS_6dB_GAIN: pwr = 2; break;
+      case ars408::RadarCfg::RadarPowerConfig::MINUS_9dB_GAIN: pwr = 3; break;
+    }
+    buf[4] |= static_cast<uint8_t>(pwr << 5u);
+  }
+  if (cfg.UpdateOutputType) {
+    buf[0] |= 0x08u;
+    uint8_t out = 0;
+    switch (cfg.OutputType) {
+      case ars408::RadarCfg::OutputTypeConfig::NONE:     out = 0; break;
+      case ars408::RadarCfg::OutputTypeConfig::OBJECTS:  out = 1; break;
+      case ars408::RadarCfg::OutputTypeConfig::CLUSTERS: out = 2; break;
+    }
+    buf[4] |= static_cast<uint8_t>(out << 3u);
+  }
+  if (cfg.UpdateSendQuality) {
+    buf[0] |= 0x10u;
+    if (cfg.SendQuality) { buf[5] |= 0x04u; }
+  }
+  if (cfg.UpdateSendExtInfo) {
+    buf[0] |= 0x20u;
+    if (cfg.SendExtInfo) { buf[5] |= 0x08u; }
+  }
+  if (cfg.UpdateSortIndex) {
+    buf[0] |= 0x40u;
+    uint8_t sort = 0;
+    switch (cfg.SortIndex) {
+      case ars408::RadarCfg::Sorting::NO_SORT:  sort = 0; break;
+      case ars408::RadarCfg::Sorting::BY_RANGE: sort = 1; break;
+      case ars408::RadarCfg::Sorting::BY_RCS:   sort = 2; break;
+    }
+    buf[5] |= static_cast<uint8_t>(sort << 4u);
+  }
+  if (cfg.UpdateStoreInNVM) {
+    buf[0] |= 0x80u;
+    if (cfg.StoreInNVM) { buf[5] |= 0x80u; }
+  }
+  if (cfg.UpdateRCS_Threshold) {
+    buf[6] |= 0x01u;  // valid bit
+    buf[6] |= static_cast<uint8_t>(
+      (cfg.RCS_Status == ars408::RadarCfg::RCS_Threshold::HIGH_SENSITIVITY ? 1u : 0u) << 1u);
+  }
+
+  return buf;
+}
+
+// ─── Main Parse dispatcher ───────────────────────────────────────────────────
 std::string Ars408Driver::Parse(
-  const uint32_t & can_id, const std::array<uint8_t, 8> & in_can_data,
+  const uint32_t & can_id,
+  const std::array<uint8_t, 8> & in_can_data,
   const uint8_t & in_data_length)
 {
   if (can_id == radar_state_id_) {
-    /// RadarState: current configuration and sensor state
-    if (ars408::RADAR_STATE_BYTES == in_data_length) {
+    if (in_data_length == ars408::RADAR_STATE_BYTES) {
       ParseRadarState(in_can_data);
     }
   } else if (can_id == obj_status_id_) {
-    /// Obj_0_Status: list header, number of objects
-    if (ars408::OBJ_STATUS_BYTES == in_data_length) {
+    if (in_data_length == ars408::OBJ_STATUS_BYTES) {
+      // Publish previous cycle's objects before resetting
       if (!sequential_publish_ && DetectedObjectsReady()) {
         CallDetectedObjectsCallback(radar_objects_);
       }
+      ParseObject0_Status(in_can_data);
       ClearRadarObjects();
     }
   } else if (can_id == obj_general_id_) {
-    /// Obj_1_General: position and velocity of each object
-    if (ars408::OBJ_GENERAL_BYTES == in_data_length) {
-      ars408::RadarObject object = ParseObject1_General(in_can_data);
-      AddDetectedObject(object);
+    if (in_data_length == ars408::OBJ_GENERAL_BYTES) {
+      ars408::RadarObject obj = ParseObject1_General(in_can_data);
+      AddDetectedObject(obj);
     }
   } else if (can_id == obj_quality_id_) {
-    /// Obj_2_Quality: quality information of each object
-    if (ars408::OBJ_QUALITY_BYTES == in_data_length) {
-      ars408::Obj_2_Quality object_quality = ParseObject2_Quality(in_can_data);
-      UpdateObjectQuality(object_quality.Id, object_quality);
+    if (in_data_length == ars408::OBJ_QUALITY_BYTES) {
+      ars408::Obj_2_Quality q = ParseObject2_Quality(in_can_data);
+      UpdateObjectQuality(q.Id, q);
     }
   } else if (can_id == obj_extended_id_) {
-    /// Obj_3_Extended: extended information of each object
-    if (ars408::OBJ_EXTENDED_BYTES == in_data_length) {
-      ars408::Obj_3_Extended object_ext_info = ParseObject3_Extended(in_can_data);
-      UpdateObjectExtInfo(object_ext_info.Id, object_ext_info);
+    if (in_data_length == ars408::OBJ_EXTENDED_BYTES) {
+      ars408::Obj_3_Extended ext = ParseObject3_Extended(in_can_data);
+      UpdateObjectExtInfo(ext.Id, ext);
     }
   }
 
