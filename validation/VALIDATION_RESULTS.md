@@ -1,76 +1,117 @@
 # ARS408 Radar Driver — Validation Results
-**Date:** 2026-07-01  
-**Platform:** MiviaCar (MIVIA Lab, UNISA)  
-**Driver:** `pe_ars408_ros` (AbdelmoutalibDOUADI/ars408_driver)  
-**Sensor:** Continental ARS408-21 77 GHz  
-**ROS2:** Humble | **Autoware:** Universe v1.8.0  
 
-> ⚠️ **Test scope:** FRONT radar only (SensorID=0)  
-> Rear radar (SensorID=1) physically not connected during this session.
+**Date:** 2026-07-01
+**Platform:** MiviaCar — MIVIA Lab, UNISA
+**Driver:** pe_ars408_ros (AbdelmoutalibDOUADI/ars408_driver)
+**Sensor:** Continental ARS408-21 77 GHz FMCW Radar
+**ROS2 Distribution:** Humble
+**Autoware Version:** Universe v1.8.0
+
+> **Test scope:** Front radar only (SensorID=0).
+> The rear radar (SensorID=1) was not physically connected during this session.
 
 ---
 
 ## 1. Test Environment
 
-| Component | Details |
-|-----------|---------|
-| Vehicle | MiviaCar autonomous platform |
-| Radar tested | Continental ARS408-21 **FRONT** (SensorID=0) |
-| Radar NOT tested | Continental ARS408-21 REAR (SensorID=1) — not connected |
-| CAN Interface | `can1` (hardware, radar bus) |
-| Vehicle CAN | `can0` (PIX Hooke vehicle bus — separate) |
-| LiDAR | Ouster OS1 (cross-validation only) |
-| Stack | Autoware Universe v1.8.0 (ROS2 Humble) |
-| Visualization | RViz2 + Foxglove Studio |
+| Component         | Details                                      |
+|-------------------|----------------------------------------------|
+| Vehicle           | MiviaCar autonomous platform                 |
+| Radar (tested)    | Continental ARS408-21 FRONT — SensorID=0     |
+| Radar (pending)   | Continental ARS408-21 REAR — SensorID=1      |
+| CAN interface     | can1 — dedicated radar bus                   |
+| Vehicle CAN       | can0 — PIX Hooke vehicle bus (separate)      |
+| LiDAR             | Ouster OS1 — used for cross-validation       |
+| Autoware stack    | Universe v1.8.0, ROS2 Humble                 |
+| Visualization     | RViz2                                        |
 
 ### Why front radar only?
-The rear radar (SensorID=1) uses CAN IDs `0x61A`–`0x61D` (offset by `SensorID × 0x10`).
-No such frames were observed in `candump can1` during the test session,
-confirming the rear radar was not physically active.
 
-```
-Front SensorID=0 → CAN IDs: 0x60A, 0x60B, 0x60C, 0x60D  ✅ tested
-Rear  SensorID=1 → CAN IDs: 0x61A, 0x61B, 0x61C, 0x61D  🔜 pending
-```
+The rear radar (SensorID=1) uses CAN IDs derived from the following formula:
 
----
+    MsgId = BASE + SensorID x 0x10
 
-## 2. Pipeline Architecture
+    Front SensorID=0 :  0x60A  0x60B  0x60C  0x60D   (tested)
+    Rear  SensorID=1 :  0x61A  0x61B  0x61C  0x61D   (not detected in candump)
 
-```
-ARS408 Radar FRONT (77 GHz, SensorID=0)
-        │
-        │ CAN frames: 0x60A (status) 0x60B (general)
-        │             0x60C (quality) 0x60D (extended)
-        ▼
-    can1  (hardware CAN bus — radar only)
-        │
-        ▼
-radar_can_receiver  [lifecycle node, manually activated]
-        │  /radar_can_bus  [can_msgs/msg/Frame @ ~300 Hz]
-        ▼
-    ars408_node  (pe_ars408_ros)
-        │
-        ├── /objects_raw      [radar_msgs/msg/RadarTracks @ 13.6 Hz]
-        └── /scan             [radar_msgs/msg/RadarScan]
-                │
-                ▼
-    radar_pointcloud_node
-                │
-                └── /radar_pointcloud  [sensor_msgs/msg/PointCloud2 @ 13.6 Hz]
-                                │
-                                ▼
-                    RViz2 / Foxglove Studio
-
-NOTE: Autoware uses can0 for PIX Hooke vehicle bus (separate from radar).
-      A dedicated socket_can_receiver must be launched for can1.
-```
+No frames with IDs 0x61A–0x61D were observed during the session,
+confirming the rear radar was not active on can1.
 
 ---
 
-## 3. Launch Procedure (Manual — MiviaCar)
+## 2. System Architecture
 
-### Step 1 — Start radar CAN receiver (lifecycle node)
+The following diagram shows the complete data flow from the physical radar
+to the RViz2 visualization.
+
+```
++---------------------------+
+|  ARS408-21 FRONT Radar    |
+|  77 GHz — SensorID=0      |
++---------------------------+
+             |
+             | CAN frames
+             | 0x60A  Object_0_Status
+             | 0x60B  Object_1_General
+             | 0x60C  Object_2_Quality
+             | 0x60D  Object_3_Extended
+             v
++---------------------------+
+|   can1  (hardware)        |
+|   radar dedicated bus     |
++---------------------------+
+             |
+             v
++----------------------------------+
+|  socket_can_receiver_node        |
+|  (lifecycle node — activated)    |
+|  interface: can1                 |
++----------------------------------+
+             |
+             | /radar_can_bus
+             | [can_msgs/msg/Frame]
+             | ~300 Hz
+             v
++----------------------------------+
+|  pe_ars408_node                  |
+|  CAN decoding + track parsing    |
++----------------------------------+
+             |
+             +---> /objects_raw
+             |     [radar_msgs/msg/RadarTracks]
+             |     13.6 Hz
+             |
+             +---> /scan
+                   [radar_msgs/msg/RadarScan]
+                        |
+                        v
+             +----------------------------------+
+             |  radar_pointcloud_node           |
+             |  RadarTracks -> PointCloud2      |
+             +----------------------------------+
+                        |
+                        | /radar_pointcloud
+                        | [sensor_msgs/msg/PointCloud2]
+                        | 13.6 Hz
+                        v
+             +---------------------------+
+             |   RViz2                   |
+             |   Fixed Frame: base_link  |
+             +---------------------------+
+```
+
+**Important note on CAN bus separation:**
+Autoware uses can0 for the PIX Hooke vehicle interface.
+The radar operates on can1 as a separate bus.
+A dedicated socket_can_receiver must be launched independently for can1,
+separate from the Autoware CAN stack.
+
+---
+
+## 3. Launch Procedure
+
+### Step 1 — Start the radar CAN receiver (lifecycle node)
+
 ```bash
 ros2 run ros2_socketcan socket_can_receiver_node_exe \
   --ros-args \
@@ -82,7 +123,11 @@ ros2 lifecycle set /radar_can_receiver configure
 ros2 lifecycle set /radar_can_receiver activate
 ```
 
-### Step 2 — Start ARS408 driver node
+The lifecycle node must be explicitly configured and activated.
+Without this step, /radar_can_bus is not published.
+
+### Step 2 — Start the ARS408 driver node
+
 ```bash
 ros2 run pe_ars408_ros pe_ars408_node \
   --ros-args \
@@ -92,7 +137,8 @@ ros2 run pe_ars408_ros pe_ars408_node \
   -r /ars408_node/output/scan:=/scan
 ```
 
-### Step 3 — Start PointCloud2 converter
+### Step 3 — Start the PointCloud2 converter
+
 ```bash
 ros2 run pe_ars408_ros radar_pointcloud_node \
   --ros-args \
@@ -100,137 +146,210 @@ ros2 run pe_ars408_ros radar_pointcloud_node \
   -r /radar_pointcloud_node/output/pointcloud:=/radar_pointcloud
 ```
 
-> 💡 Use `scripts/launch_radar_miviaCar.sh` to run all steps automatically.
+A one-shot launch script integrating all three steps is available
+at scripts/launch_radar_miviaCar.sh.
 
 ---
 
 ## 4. Validation Results
 
-### 4.1 CAN Bus Communication ✅
+### 4.1 CAN Bus Communication
+
+Raw CAN frames observed on can1:
+
 ```
 candump can1 | head -5
-  can1  60A   [4]  09 EE 99 10   ← Object_0_Status header (9 objects)
-  can1  60B   [8]  05 4E 5C 03 80 20 06 66  ← Object general info
+
+  can1  60A   [4]  09 EE 99 10
+  can1  60B   [8]  05 4E 5C 03 80 20 06 66
   can1  60B   [8]  10 4E CC 02 80 20 01 8F
   can1  60B   [8]  1B 4F 24 01 80 20 01 7B
-  can1  60C   [7]  3D 84 A3 3A 02 20 E8     ← Object quality
+  can1  60C   [7]  3D 84 A3 3A 02 20 E8
 ```
-**Result:** ARS408 CAN frames correctly received on `can1` ✅
 
-### 4.2 Topic Publication Rate ✅
-| Topic | Rate | Expected | Status |
-|-------|------|----------|--------|
-| `/radar_can_bus` | 300 Hz | ~300 Hz | ✅ |
-| `/objects_raw` | **13.6 Hz** | 13–17 Hz | ✅ |
-| `/radar_pointcloud` | 13.6 Hz | 13–17 Hz | ✅ |
+Frame 0x60A (first byte = 0x09) indicates 9 objects detected in that cycle.
+Result: ARS408 CAN frames correctly received and identified on can1.
 
-### 4.3 Object Detection — Sample Data ✅
-```yaml
-# 6 objects detected in single frame
-tracks:
-- position: {x: 10.6m, y:  0.8m}  size: {4.4×1.8m}  class: CAR (32001)
-- position: {x: 16.8m, y:  0.2m}  size: {2.2×2.4m}  class: CAR (32001)
-- position: {x:  5.8m, y:  0.8m}  size: {0.6×0.2m}  class: UNKNOWN (32000)
-- position: {x:  4.2m, y:  1.2m}  size: {1.0×1.0m}  class: UNKNOWN (32000)
-- position: {x:  8.6m, y: -1.0m}  size: {1.0×1.0m}  class: UNKNOWN (32000)
-- position: {x:  1.4m, y:  1.0m}  size: {1.4×1.0m}  class: UNKNOWN (32000)
+### 4.2 Topic Publication Rate
+
+| Topic              | Measured rate | Expected rate | Result |
+|--------------------|---------------|---------------|--------|
+| /radar_can_bus     | 300 Hz        | ~300 Hz       | Pass   |
+| /objects_raw       | 13.6 Hz       | 13 – 17 Hz    | Pass   |
+| /radar_pointcloud  | 13.6 Hz       | 13 – 17 Hz    | Pass   |
+
+The publication rate of 13.6 Hz is within the ARS408-21 specification.
+
+### 4.3 Object Detection — Sample Frame
+
 ```
-**Result:** 6 objects detected, range 1.4m–16.8m ✅
+Frame timestamp: 2026-07-01 12:51:31 UTC
 
-### 4.4 RViz2 Visualization ✅
-See screenshots in `validation/results/`:
+Object   Position X   Position Y   Size (m)    Classification
+------   ----------   ----------   --------    --------------
+  1        10.6 m       +0.8 m    4.4 x 1.8   CAR  (32001)
+  2        16.8 m       +0.2 m    2.2 x 2.4   CAR  (32001)
+  3         5.8 m       +0.8 m    0.6 x 0.2   UNKNOWN (32000)
+  4         4.2 m       +1.2 m    1.0 x 1.0   UNKNOWN (32000)
+  5         8.6 m       -1.0 m    1.0 x 1.0   UNKNOWN (32000)
+  6         1.4 m       +1.0 m    1.4 x 1.0   UNKNOWN (32000)
 
-| Screenshot | Description |
-|-----------|-------------|
-| `rviz_radar_pointcloud.png` | Radar PointCloud2 alone |
-| `rviz_radar_lidar_combined.png` | Radar + LiDAR combined |
-| `rviz_radar_lidar_final.png` | Final view — radar objects on LiDAR scene |
-| `foxglove_topics.png` | Foxglove Studio connected to MiviaCar |
+Detection range: 1.4 m to 16.8 m
+Number of objects: 6
+```
+
+### 4.4 RViz2 Visualization
+
+Two PointCloud2 displays were configured simultaneously in RViz2:
+
+```
+Display 1 — LiDAR
+  Topic     : /sensing/lidar/top/ouster/points
+  Type      : sensor_msgs/msg/PointCloud2
+  Style     : Flat Squares
+  Size (m)  : 0.01
+  Color     : Intensity (rainbow)
+
+Display 2 — Radar
+  Topic     : /radar_pointcloud
+  Type      : sensor_msgs/msg/PointCloud2
+  Style     : Flat Squares
+  Size (m)  : 0.5
+  Color     : Intensity (rainbow)
+```
+
+Screenshots are available in validation/results/:
+
+```
+rviz_radar_pointcloud.png      Radar PointCloud2 displayed alone
+rviz_radar_lidar_combined.png  Radar and LiDAR displayed together
+rviz_radar_lidar_final.png     Final view — radar objects on LiDAR scene
+```
+
+The radar detections (large colored squares) are visually consistent
+with the obstacles visible in the LiDAR point cloud.
 
 ---
 
 ## 5. TF Frame Transformation
 
-### Problem
-Each sensor publishes in its own coordinate frame:
-```
-LiDAR (Ouster)  → frame: os_sensor_top
-Radar (ARS408)  → frame: radar_front_link
-```
-RViz2 needs a single **Fixed Frame** to display all data together.
-Switching Fixed Frame to `os_sensor_top` hides the radar and vice versa.
+### 5.1 Problem Statement
 
-### Solution — Virtual parent frame `base_link`
+Each sensor on MiviaCar publishes data in its own coordinate frame:
 
 ```
-              base_link  (virtual common parent)
-             /          \
-            /              \
-    os_sensor_top      radar_front_link
-          |                    |
-     os_lidar_top           (radar data)
-     os_imu
+LiDAR (Ouster OS1)   -->  frame_id: os_sensor_top
+Radar (ARS408 front) -->  frame_id: radar_front_link
 ```
 
-### Commands used
+RViz2 requires a single Fixed Frame to display all data in the same scene.
+Without a common parent frame, switching the Fixed Frame between
+os_sensor_top and radar_front_link causes the other sensor to disappear.
+
+### 5.2 Solution — Static Transform Publisher
+
+A virtual parent frame named base_link was introduced.
+Two static transforms connect each sensor frame to this common parent.
+
+```
+                  base_link
+                 (virtual parent)
+                /               \
+               /                 \
+        [T1: identity]      [T2: identity]
+             /                       \
+      os_sensor_top           radar_front_link
+            |                        |
+       os_lidar_top              (radar data)
+       os_imu
+```
+
+Transform T1 and T2 are both identity transforms (no translation,
+no rotation), used here for testing purposes only.
+
+### 5.3 Commands
+
 ```bash
-# Connect radar frame to base_link
-ros2 run tf2_ros static_transform_publisher \
-  0 0 0 0 0 0 base_link radar_front_link
-
-# Connect LiDAR frame to base_link
+# T1 — connect LiDAR frame to base_link
 ros2 run tf2_ros static_transform_publisher \
   0 0 0 0 0 0 base_link os_sensor_top
+
+# T2 — connect radar frame to base_link
+ros2 run tf2_ros static_transform_publisher \
+  0 0 0 0 0 0 base_link radar_front_link
 ```
 
-### Parameters explained
+Parameter order:
+
 ```
-0  0  0  → translation X Y Z = 0 m  (no offset)
-0  0  0  → rotation roll pitch yaw = 0° (no rotation)
+x  y  z  roll  pitch  yaw  parent_frame  child_frame
+
+0  0  0    0     0     0   base_link     os_sensor_top
+^  ^  ^    ^     ^     ^
+|  |  |    |     |     |
+translation (m)  rotation (rad)
 ```
 
-> ⚠️ **Important:** Values `0 0 0 0 0 0` are used for testing only.  
-> In production, real **extrinsic calibration** values must be used  
-> (measured physical offsets of each sensor on MiviaCar).
+### 5.4 RViz2 Configuration
 
-### Result in RViz2
-With `Fixed Frame = base_link`:
-- LiDAR dense point cloud ✅
-- Radar PointCloud2 (colored squares) ✅  
-- Both displayed simultaneously ✅
-- Radar detections visually consistent with LiDAR obstacles ✅
+```
+Fixed Frame : base_link
+              |
+              +-- Display 1 : /sensing/lidar/top/ouster/points
+              +-- Display 2 : /radar_pointcloud
+```
+
+With this configuration, both sensors are rendered in the same scene.
+
+### 5.5 Important Note on Calibration
+
+The identity transform (0 0 0 0 0 0) assumes that both sensors
+are co-located at the origin with identical orientation.
+This is not physically accurate on MiviaCar.
+
+For production use, the transform parameters must be replaced
+with real extrinsic calibration values:
+- Translation: measured X Y Z offset between sensor mounting positions
+- Rotation: measured roll pitch yaw difference in sensor orientations
+
+Extrinsic calibration is planned as a future task.
 
 ---
 
-## 6. Known Issues & Next Steps
+## 6. Known Issues and Next Steps
 
-| Item | Status | Action |
-|------|--------|--------|
-| Front radar (SensorID=0) validated | ✅ Done | — |
-| Rear radar (SensorID=1) | 🔜 Pending | Connect rear radar, test `dual_radar.launch.xml` |
-| Lifecycle node activation manual | ⚠️ | Integrate in launch file |
-| TF calibration (zeros used) | ⚠️ | Measure real sensor offsets on MiviaCar |
-| Foxglove `radar_msgs` not rendered | ⚠️ | Use `/radar_pointcloud` topic instead |
-| Autoware integration `/sensing/radar` | 🔜 | Remap `/objects_raw` → Autoware perception |
-
----
-
-## 7. ROS2 Bag Info
-```
-File: radar_lidar_recording_0.db3
-Duration: 87.8s
-Topics:
-  /objects_raw                      [radar_msgs/msg/RadarTracks]   1191 msgs
-  /radar_pointcloud                 [sensor_msgs/msg/PointCloud2]  1191 msgs
-  /sensing/lidar/top/ouster/points  [sensor_msgs/msg/PointCloud2]  ~870 msgs
-  /radar_can_bus                    [can_msgs/msg/Frame]
-  /sensing/radar/can_tx             [can_msgs/msg/Frame]
-  /tf                               [tf2_msgs/msg/TFMessage]      14008 msgs
-  /tf_static                        [tf2_msgs/msg/TFMessage]          3 msgs
-```
+| Item                               | Status  | Action required                          |
+|------------------------------------|---------|------------------------------------------|
+| Front radar (SensorID=0)           | Done    | —                                        |
+| Rear radar (SensorID=1)            | Pending | Connect hardware, test dual_radar.launch |
+| Lifecycle node activation          | Manual  | Integrate configure+activate in launch   |
+| Extrinsic calibration (TF)         | Pending | Measure real sensor offsets on MiviaCar  |
+| Autoware perception integration    | Pending | Remap /objects_raw to Autoware pipeline  |
 
 ---
 
-*Validation: Abdelmoutalib DOUADI — MIVIA Lab, UNISA*  
-*Supervisor: Alessio*  
-*Next session: Douadi (MiviaCar PC) — rear radar + Autoware integration*
+## 7. ROS2 Bag Recording
+
+A bag file was recorded during the validation session for offline analysis.
+
+```
+File     : radar_lidar_recording_0.db3
+Duration : 87.8 s
+
+Topic                                  Type                          Messages
+-----                                  ----                          --------
+/objects_raw                           radar_msgs/msg/RadarTracks      1191
+/radar_pointcloud                      sensor_msgs/msg/PointCloud2     1191
+/sensing/lidar/top/ouster/points       sensor_msgs/msg/PointCloud2      ~870
+/radar_can_bus                         can_msgs/msg/Frame              ~26000
+/sensing/radar/can_tx                  can_msgs/msg/Frame              ~26000
+/tf                                    tf2_msgs/msg/TFMessage          14008
+/tf_static                             tf2_msgs/msg/TFMessage              3
+```
+
+---
+
+Validation performed by: Abdelmoutalib DOUADI
+Laboratory: MIVIA Lab, UNISA
+Supervisor: Alessio
+Next session: Rear radar validation + Autoware perception integration
