@@ -274,6 +274,39 @@ Listens: 0x60A, 0x60B...         Listens: 0x61A, 0x61B...
 
 ---
 
+## Repository structure
+
+```
+ars408_driver/
+    CAN_Recording/          Real CAN log recorded on MiviaCar (candump format)
+    config/                 YAML configuration per radar (front / rear)
+    docs/                   Documentation
+        DEMO_REALTIME_RVIZ2.md    Real-time demo procedure (radar + LiDAR in RViz2)
+        VALIDATION_RESULTS.md     Validation report on MiviaCar hardware
+        images/                   Result screenshot
+    include/ars408_ros/     C++ headers
+    launch/                 ROS2 launch files (single radar, dual radar, pointcloud)
+    matlab/                 CAN log analysis script
+    scripts/                launch_radar_miviaCar.sh — one-shot pipeline startup
+    src/                    C++ sources (driver, node, pointcloud converter)
+```
+
+---
+
+## Documentation
+
+| Document | Content |
+|----------|---------|
+| [docs/DEMO_REALTIME_RVIZ2.md](docs/DEMO_REALTIME_RVIZ2.md) | Step-by-step real-time demo: radar pipeline on can1, TF setup, RViz2 configuration, verification checklist, troubleshooting |
+| [docs/VALIDATION_RESULTS.md](docs/VALIDATION_RESULTS.md) | Validation report on MiviaCar: architecture, measured rates, detected objects, TF explanation, bag replay procedure |
+
+Result — radar detections (large squares) overlaid on the Ouster LiDAR
+point cloud in RViz2:
+
+![Radar and LiDAR combined in RViz2](docs/images/rviz_radar_lidar.png)
+
+---
+
 ## References
 
 - Continental ARS408-21 Technical Documentation V1.8 (October 2017)

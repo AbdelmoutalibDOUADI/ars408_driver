@@ -218,13 +218,8 @@ Display 2 — Radar
   Color     : Intensity (rainbow)
 ```
 
-Screenshots are available in validation/results/:
-
-```
-rviz_radar_pointcloud.png      Radar PointCloud2 displayed alone
-rviz_radar_lidar_combined.png  Radar and LiDAR displayed together
-rviz_radar_lidar_final.png     Final view — radar objects on LiDAR scene
-```
+A screenshot of the combined view is available at
+docs/images/rviz_radar_lidar.png (radar objects overlaid on the LiDAR scene).
 
 The radar detections (large colored squares) are visually consistent
 with the obstacles visible in the LiDAR point cloud.
