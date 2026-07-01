@@ -9,7 +9,7 @@
 #
 # Prerequisites:
 #   - Autoware Universe v1.8.0 running (uses can0 for vehicle)
-#   - can1 interface up and radar powered
+#   - Radar powered and connected on can1
 #   - ROS2 Humble sourced
 #   - pe_ars408_ros workspace sourced
 #
@@ -63,15 +63,6 @@ echo "  Sensor : FRONT (SensorID=0)"
 echo "  Bus    : ${CAN_INTERFACE}"
 echo "============================================================"
 echo ""
-
-# Check: can1 interface exists
-if ! ip link show "${CAN_INTERFACE}" &>/dev/null; then
-    log_error "CAN interface '${CAN_INTERFACE}' not found."
-    log_error "Bring it up with:"
-    log_error "  sudo ip link set ${CAN_INTERFACE} up type can bitrate 500000"
-    exit 1
-fi
-log_ok "CAN interface '${CAN_INTERFACE}' is available."
 
 # Check: ARS408 frames present on can1
 log_info "Checking for ARS408 CAN frames on ${CAN_INTERFACE} (2s timeout)..."
